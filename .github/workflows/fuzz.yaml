@@ -14,9 +14,9 @@ jobs:
           - arm: base
             sha: ea68cacf1fce21b6b45e161c3cc284e37b4a84db
           - arm: scripts
-            sha: 988e0802e354e581625e3a2e738f911391821218
+            sha: 83b1be5cb35845b80a2a1e8922c01050af76e7c6
           - arm: names
-            sha: 295adab2e4bb558e194d4be8de9237cacf5a5395
+            sha: db4bc9d4b0fabeb4cd7c212325b1ec8579fd486e
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
@@ -47,7 +47,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ea68cacf1fce21b6b45e161c3cc284e37b4a84db
+      # The binaries were built in the dev shell; its loader and libraries are the ones they run with.
       - uses: ./.github/actions/toolchain
+        with:
+          llvm: build
       - uses: actions/download-artifact@v7
         with:
           path: arms
@@ -61,7 +64,7 @@ jobs:
           for round in 1 2; do
             for arm in base scripts names; do
               BLAZE_BIN="$PWD/bin/$arm/blaze-engine" BLAZE_BENCH_COMMIT="$arm" BLAZE_BENCH_MACHINE="gh ubuntu-24.04" \
-                python3 harness/bench.py ripgrep cargo --runs 3 --out "results/$arm-$round.json" --work "$RUNNER_TEMP/work-$arm-$round" \
+                nix develop --command python3 harness/bench.py ripgrep cargo --runs 3 --out "results/$arm-$round.json" --work "$RUNNER_TEMP/work-$arm-$round" \
                 > "results/$arm-$round.log" 2>&1 || echo "$arm round $round: exit $?" | tee -a results/failed.txt
               tail -30 "results/$arm-$round.log"
             done
