@@ -91,6 +91,7 @@ jobs:
             /tmp/path-worker-*/*.stderr
             /tmp/path-worker-*/*.status
             /tmp/path-worker-*/assembler.log
+            /tmp/path-worker-*/linker.log
             /tmp/path-worker-*/*-home/daemon.log
             /tmp/path-worker-*/*-home/workers/*/log
           retention-days: 7
