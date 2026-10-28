@@ -54,7 +54,8 @@ jobs:
           if-no-files-found: error
       # library/, which a blaze with no checkout of its commit downloads once and checks
       # against its digest (crates/blaze-cargo/src/cargo/toolchain/library.rs).
-      - run: python3 -I harness/library.py archive "{\"out\": \"$RUNNER_TEMP/library\"}"
+      - run: |
+          python3 -I harness/library.py archive "{\"out\": \"$RUNNER_TEMP/library\"}"
       - uses: actions/upload-artifact@v7
         with:
           name: library
