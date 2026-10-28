@@ -24,12 +24,17 @@ pub enum Event {
     Started { step: Step, of: Option<String> },
     /// The step began last ended.
     Ended { step: Step, of: Option<String> },
+    /// How far the step under way is: `done` of `total` of what it counts ([`Step::counts`]),
+    /// `total` 0 while it is not known, and what of it has taken longest so far.
+    Progress { step: Step, done: u64, total: u64, longest: Option<String> },
     /// How far the build of a crate is.
     Crate { name: String, state: CrateState, fns: Fns },
     /// Why a unit or a function was compiled again rather than taken as it was.
     Rebuilt { name: String, krate: String, cause: Cause },
     /// How many more functions were compiled again than the [`Event::Rebuilt`] records name.
     Unlisted { count: u64 },
+    /// What the store had of the build's compile, and when it had little, why.
+    Cache { cache: Cache },
     /// What blaze does not build, which fails the build (docs/architecture.md, "Never
     /// guess; refuse visibly").
     Refused { name: String, why: String },
@@ -37,6 +42,80 @@ pub enum Event {
     Said { level: Level, text: String },
     /// The build is done.
     Finished { ok: bool, summary: Summary },
+    /// A node of the build's graph (docs/driver.md), said once, before it first moves: what it
+    /// is and the nodes it waits for.
+    Node { id: u32, kind: NodeKind, name: String, deps: Vec<u32> },
+    /// A node of the graph is now in `state`.
+    Moved { id: u32, state: NodeState },
+    /// What held the build up: each node of it is the one the next waited for last, from the
+    /// first to the one that finished last.
+    Critical { path: Vec<u32> },
+}
+
+/// What a node of the build's graph does (docs/driver.md, "The graph").
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NodeKind {
+    /// Reading the manifests and the lock file.
+    Manifest,
+    /// A package's source.
+    Fetch,
+    /// Compiling a build script.
+    Script,
+    /// Running a build script.
+    ScriptRun,
+    /// A proc macro's library, built and loaded.
+    Macro,
+    /// The standard library.
+    Std,
+    /// A crate's names (its def map).
+    Names,
+    /// A crate's bodies: inference, borrow checking, MIR.
+    Bodies,
+    /// A unit of functions compiled or taken from the store.
+    Codegen,
+    /// Writing compiled functions to the store.
+    Store,
+    /// Linking a program.
+    Link,
+    /// Running a test executable.
+    Test,
+}
+
+/// Where a node of the build's graph is. A node only moves down this list, from `Waiting`
+/// to one of the last four.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum NodeState {
+    /// A node it waits for is not done.
+    Waiting,
+    /// Everything it waits for is done; it waits for a thread.
+    Ready,
+    Running,
+    /// Done, by doing its work.
+    Built,
+    /// Done, by taking what the store had: this machine's, or the remote's.
+    Cached {
+        remote: bool,
+    },
+    Failed {
+        why: String,
+    },
+    /// Never run: `because` failed, and it waited for it, or the build stopped there.
+    Skipped {
+        because: u32,
+    },
+}
+
+impl NodeState {
+    /// Whether the node is done, well or not: it moves no more.
+    pub fn settled(&self) -> bool {
+        matches!(
+            self,
+            NodeState::Built
+                | NodeState::Cached { .. }
+                | NodeState::Failed { .. }
+                | NodeState::Skipped { .. }
+        )
+    }
 }
 
 /// The steps of a build, in the order they come.
@@ -63,6 +142,16 @@ pub enum Step {
     Run,
     /// Running tests (`blaze test`).
     Test,
+    /// Compiling and running the build scripts of the packages, and linking their proc macros.
+    BuildScripts,
+    /// Loading the procedural macros, each compiled to WebAssembly once.
+    Macros,
+    /// Optimizing the compiled code (`--release`).
+    Optimize,
+    /// Writing what the build compiled to the store, for the next build.
+    Store,
+    /// Fetching what other machines compiled from the remote store, or sending it there.
+    Remote,
 }
 
 impl Step {
@@ -79,6 +168,11 @@ impl Step {
             Step::Check => "Checking",
             Step::Run => "Running",
             Step::Test => "Testing",
+            Step::BuildScripts => "Building",
+            Step::Macros => "Loading",
+            Step::Optimize => "Optimizing",
+            Step::Store => "Storing",
+            Step::Remote => "Fetching",
         }
     }
 
@@ -95,6 +189,28 @@ impl Step {
             Step::Check => "crates",
             Step::Run => "program",
             Step::Test => "tests",
+            Step::BuildScripts => "build scripts and proc macros",
+            Step::Macros => "proc macros",
+            Step::Optimize => "code",
+            Step::Store => "the build in the store",
+            Step::Remote => "from the remote store",
+        }
+    }
+
+    /// What a [`Event::Progress`] of the step counts.
+    pub fn counts(self) -> &'static str {
+        match self {
+            Step::LoadWorkspace | Step::Resolve | Step::Std => "crates",
+            Step::Fetch => "packages",
+            Step::FrontEnd => "bodies",
+            Step::Codegen | Step::Optimize => "fns",
+            Step::Link => "objects",
+            Step::Check => "files",
+            Step::Run => "programs",
+            Step::Test => "tests",
+            Step::BuildScripts => "steps",
+            Step::Macros => "macros",
+            Step::Store | Step::Remote => "entries",
         }
     }
 }
@@ -102,11 +218,39 @@ impl Step {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CrateState {
     Waiting,
+    /// Its functions are being compiled.
     Running,
     /// Every function was in the store or unchanged.
     UpToDate,
     Built,
     Failed,
+    /// Its names are being resolved: its modules read, its macros expanded.
+    Resolving,
+    /// Its names are resolved, and it waits for its functions to be compiled.
+    Resolved,
+    /// Its bodies are being checked: types, borrows, lints.
+    Checking,
+}
+
+impl CrateState {
+    /// Whether nothing more is done of the crate in this build.
+    pub fn is_done(self) -> bool {
+        matches!(self, CrateState::UpToDate | CrateState::Built | CrateState::Failed)
+    }
+
+    /// What a crate in the state is said to be doing, in a word.
+    pub fn word(self) -> &'static str {
+        match self {
+            CrateState::Waiting => "waiting",
+            CrateState::Running => "compiling",
+            CrateState::UpToDate => "up to date",
+            CrateState::Built => "built",
+            CrateState::Failed => "failed",
+            CrateState::Resolving => "resolving",
+            CrateState::Resolved => "resolved",
+            CrateState::Checking => "checking",
+        }
+    }
 }
 
 /// The functions of a crate: how many the build has, how many are done, and of those how
@@ -180,6 +324,30 @@ pub struct Summary {
     /// How many more there were than `rebuilt` lists.
     pub more: u64,
     pub error: Option<String>,
+    /// What the store had, of a build that compiled.
+    pub cache: Option<Cache>,
+    /// The steps that took longest, longest first: why the build took as long as it did.
+    pub slowest: Vec<Took>,
+}
+
+/// The entries of compiled code a build asked the store for: found on this machine, fetched
+/// from the remote store, or compiled because neither had them.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct Cache {
+    pub found: u64,
+    pub fetched: u64,
+    pub compiled: u64,
+    /// Why the store had none of the build, when it had none: no store, an empty one, or one
+    /// of another blaze whose entries are not this one's.
+    pub cold: Option<String>,
+}
+
+/// How long a step took, of what.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct Took {
+    pub step: Step,
+    pub of: Option<String>,
+    pub took_ns: u64,
 }
 
 /// What a client asks the daemon of builds.

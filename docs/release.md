@@ -39,16 +39,41 @@ published as a full release and counts as stable.
 
 ## Cutting a canary
 
-`release-cut.yaml` (by hand, on main) or the release train's `release` job commits
-`release: v0.YYYYMMDD.N` and tags it; `release.yaml` builds the archives on the tag for macOS
-(Apple silicon) and Linux (x86-64, ARM64) and publishes them as a prerelease with `SHA256SUMS`
-and the tag's CHANGELOG.md section as its notes. PGO is off for now (#870): the release is built
-with `--no-pgo`.
+Every green main is a canary, cheaply. `canary.yaml` runs when the merge gate's run on a push to
+main ends green (and hourly, and by hand): `.github/scripts/canary.py cut` tags the newest
+commit of main whose `ci` check is green (main moves faster than its gate, so that is seldom
+HEAD itself; it looks through main's first parents since the newest release) `v0.YYYYMMDD.N`
+through the API and dispatches `release.yaml` on the tag, when
+
+- something besides the docs (`docs/`, `site/`, `agents/`, `*.md`) and the bots' own commits
+  changed from the newest release to that commit,
+- no `release-cut.yaml` is running and no `release.yaml` is building a release (a run on a
+  branch is not one), and the newest release is at least 30
+  minutes old (`-f min-minutes=N` by hand). A green main inside that window is cut by the next
+  green push or the hourly run.
+
+No commit goes to main, so a cut never races a merge, and a canary is the bytes of a commit
+that passed the gate as it is. release.yaml stamps the tag's version into its own checkout
+(Cargo.toml's workspace version and the workspace's entries of Cargo.lock, `canary.py stamp`),
+so `blaze --version` and the archives' names are the tag's, and writes the notes: CHANGELOG.md's
+[Unreleased] and the title of each change merged since the previous release. Main's Cargo.toml
+keeps the version of the last release commit.
+
+`release-cut.yaml` (by hand, on main) or the release train's `release` job still cuts a release
+the old way: it commits `release: v0.YYYYMMDD.N` (the version, a CHANGELOG.md section, Cargo.lock,
+nix/units) and tags it, and that release's notes are its CHANGELOG.md section. Both count every
+tag, so they never take the same number.
+
+Either way `release.yaml` builds the archives on the tag for macOS (Apple silicon) and Linux
+(x86-64, ARM64) and publishes them as a prerelease with `SHA256SUMS`. PGO is off for now (#870):
+the release is built with `--no-pgo`.
 
 ## Promotion to stable
 
 `release.yaml` starts `promote.yaml` once it has published the prerelease (by dispatch: a release
-the workflow's own token publishes starts no `release:` workflow). It runs, against the
+the workflow's own token publishes starts no `release:` workflow). One gate runs at a time; a
+newer canary's run replaces one still waiting, so the gate always takes the newest canary when it
+is free, and a canary it never took stays a canary. It runs, against the
 published archives, installed with `install.sh --version <v>` as a user installs them, on macOS
 (Apple silicon) and Linux (x86-64 and ARM64):
 
@@ -102,8 +127,13 @@ PATH for an installed release).
   in its entry): cargo 0.92.0 (which says `cargo 1.91.0`), zed v1.24.4 (a window it does not open: `--help`; its tests are
   those of the crates below gpui, since the whole suite with both builds is longer than a
   hosted runner's six hours), servo v0.7.0 (`--version`; the tests of crates without a window
-  or a GPU), and bun's Rust port (bun-v1.4.3, after `harness/bunprep.py` built its C and C++ in
-  `nix develop .#bench-bun`). Each is also measured against cargo (above).
+  or a GPU), bun's Rust port (bun-v1.4.3, after `harness/bunprep.py` built its C and C++ in
+  `nix develop .#bench-bun`), and NVIDIA Dynamo v1.6.1 (the workspace, on macOS `dynamo-llm`
+  without its Linux-only default feature; its Python bindings built and imported; the CPU-only
+  vLLM mocker server's `--help`; its tests that need no GPU). What a runner without a GPU cannot
+  build or test is listed with why in the entry's `excluded`, which smoke.py prints. Each is also
+  measured against cargo (above); cargo builds dynamo with its pinned Rust 1.96.1, which its
+  users build with.
 
 The std cases are the merge gate's; all four groups are the promotion gate. blaze itself is in
 the corpus but not measured against cargo here: how fast blaze builds blaze is the self-build's
