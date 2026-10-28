@@ -5567,6 +5567,7 @@ impl std::error::Error for PatchUnlinked {}
 /// ([`headerpad_ahead`]).
 #[expect(clippy::too_many_arguments)]
 fn link(
+    path: Option<&str>,
     cmd: Option<&str>,
     splice: Option<&Path>,
     patch: Option<&Path>,
@@ -5703,13 +5704,13 @@ fn link(
         let objects: Vec<&Path> = [Some(object), prebuilt, patch].into_iter().flatten().collect();
         headerpad_ahead(binary, &objects)?;
     }
-    run_link(cmd, splice, start, &declined)?;
+    run_link(path, cmd, splice, start, &declined)?;
     if let Some(binary) = splice
         && let Some(pad) = headerpad_short(binary)
     {
         cargo::plan::write_headerpad(binary, pad)?;
         let again = format!("; again with -Wl,-headerpad,{pad:#x}, for the splices to fit");
-        run_link(cmd, splice, Instant::now(), &again)?;
+        run_link(path, cmd, splice, Instant::now(), &again)?;
     }
     drop(reading);
     if let (Some(binary), Some(patch), true) = (splice, patch, relinked) {
@@ -5755,10 +5756,21 @@ fn packs_whole(args: &Args) -> bool {
 /// beside it and renamed into place: lld moves the file there aside as it starts to write, and
 /// GNU ld removes it, so a client that installs the last build's while another client's
 /// request links it again would find none.
-fn run_link(cmd: &str, binary: Option<&Path>, start: Instant, note: &str) -> anyhow::Result<()> {
+fn run_link(
+    path: Option<&str>,
+    cmd: &str,
+    binary: Option<&Path>,
+    start: Instant,
+    note: &str,
+) -> anyhow::Result<()> {
     let aside = binary.and_then(|binary| Some((binary, linked_aside(cmd, binary)?)));
     let line = aside.as_ref().map_or(cmd, |(_, (line, _))| line);
-    let linked = shell(line).output();
+    let mut command = shell(line);
+    match path {
+        Some(path) => command.env("PATH", path),
+        None => command.env_remove("PATH"),
+    };
+    let linked = command.output();
     let placed = match (&aside, &linked) {
         (Some((binary, (_, at))), Ok(linked)) if linked.status.success() => {
             std::fs::rename(at, binary)
@@ -9066,6 +9078,7 @@ fn run_holding(
         let named = shown_crate(&db, &args);
         events::at(events::Step::Link, Some(&named));
         link(
+            ide_db::base_db::process_env_var(&db, "PATH").as_deref(),
             args.link_cmd.as_deref(),
             args.splice.as_deref(),
             args.patch.as_deref(),
@@ -9394,6 +9407,16 @@ fn run_holding(
                     }
                     let asked = target.clone();
                     let mut target = target;
+                    // Re-running scripts can replace OUT_DIR files. Finish the previous
+                    // environment's builds before checking inputs of the next command.
+                    let turning = process::differs(&db, &stream.env);
+                    if turning {
+                        if !clients.is_empty() {
+                            later.push((request, asked, stream));
+                            continue;
+                        }
+                        builds.settle(&mut db, &mut programs)?;
+                    }
                     // A checkout that is not what it was loaded from is loaded again before
                     // anything is built of it. The builds under way and the ones already
                     // taken for this turn are of the checkout as it was.
@@ -9449,13 +9472,23 @@ fn run_holding(
                         }
                     }
                     // One build is for one process: its variables are what `env!` reads.
-                    if process::differs(&db, &stream.env) {
-                        if !clients.is_empty() {
-                            later.push((request, asked, stream));
-                            continue;
-                        }
-                        builds.settle(&mut db, &mut programs)?;
+                    if turning {
+                        let unset_path = ide_db::base_db::process_env_var(&db, "PATH").is_some()
+                            && stream.env.get("PATH").is_none();
+                        checkouts
+                            .cargo_config
+                            .extra_env
+                            .insert("PATH".to_owned(), stream.env.get("PATH"));
                         let reading = process::turn(&mut db, stream.env.clone());
+                        if unset_path && checkouts.loaded.reset_proc_macro_servers() {
+                            checkouts.loaded.add(
+                                Vec::new(),
+                                &checkouts.cargo_config.extra_env,
+                                &checkouts.load_config,
+                                tree.vfs(),
+                                &mut db,
+                            )?;
+                        }
                         prepare_macro_sessions(&db);
                         if !reading.is_empty() {
                             for program in &mut programs {
@@ -10394,8 +10427,10 @@ fn run_holding(
             let own_line = programs[at].args.exe.is_some();
             let prebuilt = programs[at].args.prebuilt.clone();
             let read_as = (over != base).then(|| (over.clone(), unlinked.clone()));
+            let path = ide_db::base_db::process_env_var(&db, "PATH");
             let linked = std::thread::spawn(move || {
                 let failed = link(
+                    path.as_deref(),
                     link_cmd.as_deref(),
                     splice.as_deref(),
                     spliced.as_deref(),
@@ -11032,6 +11067,7 @@ impl Program {
             let packs = packs_whole(args);
             let own_line = args.exe.is_some();
             let unlinked = link(
+                ide_db::base_db::process_env_var(db, "PATH").as_deref(),
                 cmd,
                 splice,
                 patch,
