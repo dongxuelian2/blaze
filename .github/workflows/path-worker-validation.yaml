@@ -1,0 +1,37 @@
+name: PATH worker baseline
+on:
+  push:
+    branches: [codex/path-worker-805-validation]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUST_BACKTRACE: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/toolchain
+      - name: Install the affected reference release
+        run: sh install.sh --version 0.20261028.7 --no-toolchain --yes
+      - name: Versions
+        run: |
+          blaze-engine --version
+          rustc -vV
+          uname -a
+      - name: Reproduce the PATH defect before the compiler fix
+        env:
+          BLAZE_BIN: /home/runner/.cargo/bin/blaze-engine
+        run: |
+          python3 harness/pathenv.py '{"blaze":"/home/runner/.cargo/bin/blaze","work":"/tmp/path-worker-baseline"}'
+      - name: Preserve baseline results and worker logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: path-worker-baseline
+          path: /tmp/path-worker-baseline
+          retention-days: 7
