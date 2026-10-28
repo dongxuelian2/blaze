@@ -358,8 +358,8 @@ fn download(from: &str, file: &str) -> anyhow::Result<Vec<u8>> {
 
 /// The digest of the library at `dir`: the sha256 of a line per file and link under it but
 /// `DIGEST`, in the order of their paths' bytes, each `<kind> <sha256 of its bytes, or of
-/// where a link points> <path>`, kind `file`, `exe` or `link`. `harness/library.py` writes the
-/// same.
+/// where a link points> <path>`, kind `file` or `link`. `harness/library.py` writes the same.
+/// Whether a file is executable is not in it: Windows does not say.
 pub fn digest_of(dir: &Path) -> std::io::Result<String> {
     let mut found = Vec::new();
     list(dir, "", &mut found)?;
@@ -395,14 +395,7 @@ fn list(
         } else if kind.is_dir() {
             list(&entry.path(), &path, found)?;
         } else if path != DIGEST_FILE {
-            #[cfg(unix)]
-            let exe = {
-                use std::os::unix::fs::PermissionsExt as _;
-                entry.metadata()?.permissions().mode() & 0o100 != 0
-            };
-            #[cfg(not(unix))]
-            let exe = false;
-            found.push((if exe { "exe" } else { "file" }, path, entry.path()));
+            found.push(("file", path, entry.path()));
         }
     }
     Ok(())

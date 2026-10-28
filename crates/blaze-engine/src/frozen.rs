@@ -61,7 +61,7 @@ fn mode() -> Option<Mode> {
 fn immutable(path: &str) -> Option<&str> {
     if let Some(dir) = crate::cargo::toolchain::library::dir().and_then(|it| it.to_str())
         && let Some(rest) = path.strip_prefix(dir)
-        && rest.starts_with('/')
+        && rest.starts_with(['/', '\\'])
     {
         return Some(&path[dir.len() - "library".len()..]);
     }

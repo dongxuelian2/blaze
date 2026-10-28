@@ -197,11 +197,12 @@ def files(root):
 def digest_of(root):
     """The digest of the library at `root`: the sha256 of a line per file and link under it but
     DIGEST, in the order of their paths' bytes, each `<kind> <sha256 of its bytes, or of where a
-    link points> <path>`, kind `file`, `exe` or `link` (as crates/blaze-cargo's
-    toolchain/library.rs computes it)."""
+    link points> <path>`, kind `file` or `link` (as crates/blaze-cargo's toolchain/library.rs
+    computes it). Whether a file is executable is not in it: Windows does not say."""
     lines = []
     for path, (kind, data) in sorted(files(root).items(), key=lambda it: it[0].encode()):
         if path != "DIGEST":
+            kind = "link" if kind == "link" else "file"
             lines.append(f"{kind} {hashlib.sha256(data).hexdigest()} {path}\n")
     return hashlib.sha256("".join(lines).encode()).hexdigest()
 
