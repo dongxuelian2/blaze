@@ -233,6 +233,10 @@ fn fetch_into(dir: &Path, from: &str, want: &str) -> anyhow::Result<Library> {
     }
     let archive = archive_name(want);
     let copied = Library::at(PathBuf::from(from)).map(|it| it.dir);
+    let short = &want[..want.len().min(12)];
+    let how = if copied.is_some() { "Copying" } else { "Downloading" };
+    eprintln!("{how} blaze's standard library (digest {short}, once) from {from}...");
+    let start = std::time::Instant::now();
     let staging = parent.join(format!(".{name}.unpacking"));
     _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging)?;
@@ -271,6 +275,7 @@ fn fetch_into(dir: &Path, from: &str, want: &str) -> anyhow::Result<Library> {
     })();
     _ = std::fs::remove_dir_all(&staging);
     unpacked?;
+    eprintln!("Made blaze's standard library {short} in {:.1?}.", start.elapsed());
     let fetched = Library::at(dir.to_owned()).filter(|it| it.digest == want);
     fetched.ok_or_else(|| anyhow::anyhow!("{archive} has no DIGEST that says {want}"))
 }
