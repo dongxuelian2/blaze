@@ -16,7 +16,7 @@ jobs:
           - arm: scripts
             sha: 988e0802e354e581625e3a2e738f911391821218
           - arm: names
-            sha: ad53eee9aa5cb9b964ce621d9f2afc89cd675c33
+            sha: 295adab2e4bb558e194d4be8de9237cacf5a5395
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
