@@ -3558,9 +3558,11 @@ fn resolve_all(
     let mut machine = Machine::new(Config { io: 1, work: threads, keep_going: false })?;
     // The threads at work: on a crate, or helping with one.
     let busy = std::sync::atomic::AtomicUsize::new(0);
+    // `RootDatabase` is `Send` but not `Sync`: each node clones its own from this one.
+    let shared = std::sync::Mutex::new(db.clone());
     let work = |node: NodeId| {
         let krate = crates[(node.0 - first) as usize];
-        let db = db.clone();
+        let db = shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         busy.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         hir::attach_db(&db, || resolve_one(&db, krate, &busy, threads));
         busy.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
