@@ -109,7 +109,7 @@ ASSEMBLY = dict(PLAIN, **{
 REQUIRED = dict(NATIVE, **{
     "macros/src/lib.rs": NATIVE["macros/src/lib.rs"].replace(
         'Err(error) if error.kind() == std::io::ErrorKind::NotFound => "no tool".to_owned(),',
-        'Err(error) if error.kind() == std::io::ErrorKind::NotFound => panic!("tool on PATH: {error}"),',
+        'Err(error) if error.kind() == std::io::ErrorKind::NotFound => return "PATH_REQUIRES_A_TOOL".parse().unwrap(),',
     ),
 })
 
@@ -194,6 +194,8 @@ def main(config):
                 shutil.copytree(directory, ws / directory.name)
         base = base_env(str(home))
         base.update(BLAZE_SPARE="0", BLAZE_MEMORY_MAX="off", BLAZE_IDLE_SECS="3600")
+        # Homes isolate daemon identity; the deterministic code store can share std between fixtures.
+        base["BLAZE_CACHE"] = str(work / "store")
         base["PATH"] = str(blaze.parent) + os.pathsep + base["PATH"]
         base.pop("SCRIPT_VALUE", None)
         if native:
