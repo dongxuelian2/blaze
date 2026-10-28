@@ -144,7 +144,7 @@ These measurements do depend on the GPU, and SwiftShader stands in for it:
 - **Frames.** cosmos.gl is ahead in every condition: 0.49 against 0.36 fps at 80k, and 1.29 against 0.89 at 20k. Both are bound by SwiftShader's geometry work, which is why the 800x500 window didn't help. The absolute numbers say nothing about a real GPU.
 - **Layout.** Here FA2 settles in half the time: 70 s against 145 s at 80k. That's because SwiftShader runs cosmos's GPU simulation on the CPU, and only one cosmos tick runs per drawn frame. Per step, cosmos is still cheaper: 330 ms against 445 ms. FA2's iterations are CPU work in a worker, so they won't get faster on a real GPU; cosmos's should, but this bench can't show it. This is the one place where cosmos.gl is measured behind, and I expect it to reverse on real hardware, though that is untested.
 - **The live-update stall.** At 80k only 15 of 100 cosmos updates happened, each call taking about 590 ms. `probeLive` timed the parts of an update one by one, one per animation frame, after `gl.finish()`. That run is in `raw/probe-80k` and `raw/probe-20k`, made by `vm-probe.sh` on a second ix VM; only its `probe_live` entries count, because its other phases were shortened.
-  - At 80k the update itself took a median of 7.5 ms (3.5–22 ms, almost all of it in `render()`), and `gl.finish()` took 0 ms. At 20k it took 1.6 ms.
+  - At 80k the update itself took about 7.6 ms: `render()` took a median of 7.4 ms (3.5–22.3 ms) and setting the colours 0.2 ms, while `gl.finish()` took 0 ms. At 20k it took about 1.8 ms, 1.6 ms of it `render()`.
   - So the 590 ms is the update waiting behind SwiftShader's 4-second frame, not work of its own.
 
 Against cosmos.gl:

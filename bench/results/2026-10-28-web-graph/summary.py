@@ -78,6 +78,17 @@ def main() -> None:
         raise SystemExit(__doc__)
     raw = Path(parse_input(sys.argv[1]).raw)
     for cond in sorted(p for p in raw.iterdir() if p.is_dir()):
+        if cond.name.startswith("probe-"):
+            # vm-probe.sh's runs shorten every other phase; only their probe counts.
+            for f in sorted(cond.glob("cosmos-*.json")):
+                run = json.loads(f.read_text())
+                probe = run["probe_live"]
+                print(f"### {cond.name}: a cosmos.gl live update after gl.finish(), {run['setup']['prep']['nodes']:,} functions\n")
+                for k in ("finishMs", "colorsMs", "sizesMs", "renderMs"):
+                    xs = [p[k] for p in probe]
+                    print(f"- {k}: median {statistics.median(xs):.1f}, {min(xs):.1f} to {max(xs):.1f} over {len(xs)}")
+                print()
+            continue
         runs = {arm: [json.loads(f.read_text()) for f in sorted(cond.glob(f"{arm}-*.json"))] for arm in ("cosmos", "sigma")}
         if not runs["cosmos"] and not runs["sigma"]:
             continue
