@@ -1,4 +1,4 @@
-name: PATH worker baseline
+name: PATH worker validation
 on:
   push:
     branches: [codex/path-worker-805-validation]
@@ -6,32 +6,73 @@ on:
 permissions:
   contents: read
 jobs:
-  baseline:
+  focused:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 120
     env:
       RUST_BACKTRACE: '0'
       CARGO_INCREMENTAL: '0'
       CARGO_TERM_COLOR: never
+      CARGO_BUILD_JOBS: '2'
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/toolchain
-      - name: Install the affected reference release
-        run: sh install.sh --version 0.20261028.7 --no-toolchain --yes
+        with:
+          llvm: build
+          components: rustfmt
+      - name: Formatting
+        run: cargo fmt --all --check
+      # The fast/full train builds the release binary with cargo, then tests its behavior.
+      - name: Build the compiler as the release train does
+        id: build
+        run: nix develop --command cargo build -p blaze-engine --release --features llvm --locked
+      - name: Build the pinned proc-macro server
+        run: nix develop --command python3 .github/scripts/build_release.py --server-beside target/release/blaze-engine
       - name: Versions
         run: |
-          blaze-engine --version
+          target/release/blaze-engine --version
           rustc -vV
           uname -a
-      - name: Reproduce the PATH defect before the compiler fix
+      - name: Focused regression under Cranelift and LLVM
         env:
-          BLAZE_BIN: /home/runner/.cargo/bin/blaze-engine
+          BLAZE_BIN: ${{ github.workspace }}/target/release/blaze-engine
         run: |
-          python3 harness/pathenv.py '{"blaze":"/home/runner/.cargo/bin/blaze","work":"/tmp/path-worker-baseline"}'
-      - name: Preserve baseline results and worker logs
+          for backend in cranelift llvm; do
+            BLAZE_BACKEND=$backend BLAZE_OPT=2 BLAZE_EMIT=fast python3 harness/pathenv.py "{\"blaze\":\"$PWD/target/release/blaze\",\"work\":\"/tmp/path-worker-$backend\"}"
+          done
+      - name: Existing script environment, reload and concurrency regressions
+        env:
+          BLAZE_BIN: ${{ github.workspace }}/target/release/blaze-engine
+        run: |
+          for backend in cranelift llvm; do
+            export BLAZE_BACKEND=$backend BLAZE_OPT=2 BLAZE_EMIT=fast
+            python3 harness/scriptenv.py
+            python3 harness/loadretry.py
+            python3 harness/stress.py
+          done
+      - name: Preserve compiler for subsequent focused checks
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: path-worker-compiler
+          path: |
+            target/release/blaze
+            target/release/blaze-engine
+            target/release/blaze-rustc
+            target/release/blaze-proc-macro-srv
+          retention-days: 7
+      - name: Preserve results and worker logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: path-worker-baseline
-          path: /tmp/path-worker-baseline
+          name: path-worker-results
+          path: /tmp/path-worker-*
           retention-days: 7
+
+  gate:
+    needs: focused
+    uses: ./.github/workflows/blaze-platform.yaml
+    with:
+      platform: linux-x64
+      os: ubuntu-24.04
+      tier: gate
