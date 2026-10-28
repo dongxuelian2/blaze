@@ -15,8 +15,14 @@
         markers then, and nothing else changed is undone. An empty date is harness/toolchain's.
     library.py check '{}'
         library/ is UPSTREAM's nightly's standard library but for the files PATCHES.md names and
-        UPSTREAM and PATCHES.md themselves: every other file is upstream's, byte for byte and
-        mode for mode, and none is missing or added.
+        blaze's own (UPSTREAM, PATCHES.md, DIGEST): every other file is upstream's, byte for byte
+        and mode for mode, and none is missing or added; and DIGEST is library/'s digest.
+    library.py digest '{}'
+        writes library/DIGEST, the digest blaze knows the library by (the store's key of the
+        standard library; `toolchain/library.rs` computes the same): after any change to library/.
+    library.py archive '{"out": "<dir>"}'
+        writes <dir>/library-<digest>.tar.xz, the asset of a release a blaze without a checkout
+        downloads the library from once, checking its files against the digest.
 
 The JSON is inline, a file's path, or `-` for stdin. Downloads are kept in ~/.cache/blaze-library.
 Python 3.11+, stdlib and git.
@@ -31,7 +37,8 @@ LIBRARY = os.path.join(ROOT, "library")
 UPSTREAM = os.path.join(LIBRARY, "UPSTREAM")
 PATCHES = os.path.join(LIBRARY, "PATCHES.md")
 # blaze's files in library/, which no nightly has.
-OURS = {"UPSTREAM", "PATCHES.md"}
+OURS = {"UPSTREAM", "PATCHES.md", "DIGEST"}
+DIGEST = os.path.join(LIBRARY, "DIGEST")
 DIST = "https://static.rust-lang.org/dist"
 # Where rust-src has the library in its tarball.
 INSIDE = "rust-src-nightly/rust-src/lib/rustlib/src/rust/library/"
@@ -46,6 +53,11 @@ class Nightly:
 @dataclass(frozen=True)
 class Check:
     pass
+
+
+@dataclass(frozen=True)
+class Archive:
+    out: str
 
 
 def typed(cls, text):
@@ -182,6 +194,24 @@ def files(root):
     return found
 
 
+def digest_of(root):
+    """The digest of the library at `root`: the sha256 of a line per file and link under it but
+    DIGEST, in the order of their paths' bytes, each `<kind> <sha256 of its bytes, or of where a
+    link points> <path>`, kind `file`, `exe` or `link` (as crates/blaze-cargo's
+    toolchain/library.rs computes it)."""
+    lines = []
+    for path, (kind, data) in sorted(files(root).items(), key=lambda it: it[0].encode()):
+        if path != "DIGEST":
+            lines.append(f"{kind} {hashlib.sha256(data).hexdigest()} {path}\n")
+    return hashlib.sha256("".join(lines).encode()).hexdigest()
+
+
+def write_digest():
+    digest = digest_of(LIBRARY)
+    open(DIGEST, "w").write(digest + "\n")
+    return digest
+
+
 def ours_kept():
     """blaze's files in library/, to put back over a fresh import."""
     return {name: open(os.path.join(LIBRARY, name), "rb").read()
@@ -223,7 +253,8 @@ def do_import(args):
     open(UPSTREAM, "w").write(upstream.text())
     if not os.path.isfile(PATCHES):
         open(PATCHES, "w").write(PATCHES_TEXT)
-    print(f"library/ is the standard library of {upstream.nightly} (rust-lang/rust {upstream.commit[:9]})")
+    digest = write_digest()
+    print(f"library/ is the standard library of {upstream.nightly} (rust-lang/rust {upstream.commit[:9]}), digest {digest[:12]}")
 
 
 def git(*argv, check=True, input=None):
@@ -240,6 +271,7 @@ def do_merge(args):
     if new.commit == old.commit:
         print(f"library/ is already {new.nightly}'s ({new.commit[:9]})")
         open(UPSTREAM, "w").write(new.text())
+        write_digest()
         return
     with tempfile.TemporaryDirectory(prefix="blaze-library-") as work:
         unpack(old, os.path.join(work, "a"))
@@ -268,6 +300,7 @@ def do_merge(args):
                     f"Resolve the conflict markers there, `git add` them and finish the bump; upstream's whole "
                     f"change is {kept}. git apply said:\n{applied.stderr.decode()[-3000:]}")
     open(UPSTREAM, "w").write(new.text())
+    write_digest()
     print(f"library/ merged {old.nightly} ({old.commit[:9]}) -> {new.nightly} ({new.commit[:9]})")
 
 
@@ -285,6 +318,10 @@ def do_check(args):
     for kind, paths in (("differs from upstream", differ), ("is missing", missing), ("is not upstream's", added)):
         for path in paths:
             print(f"library/{path} {kind}{'' if path in named else ' and PATCHES.md does not name it'}")
+    recorded = open(DIGEST).read().strip() if os.path.isfile(DIGEST) else "(none)"
+    if (digest := digest_of(LIBRARY)) != recorded:
+        sys.exit(f"library.py: library/DIGEST says {recorded} and library/'s digest is {digest}: "
+                 f"`library.py digest '{{}}'` writes it")
     if unnamed:
         sys.exit(f"library.py: library/ is not {upstream.nightly}'s standard library: {len(unnamed)} file(s) "
                  f"changed that PATCHES.md does not name")
@@ -292,8 +329,41 @@ def do_check(args):
           f"{len(named & (set(differ) | set(missing) | set(added)))} patched")
 
 
+def do_digest(args):
+    print(f"library/DIGEST: {write_digest()}")
+
+
+def do_archive(args):
+    digest = open(DIGEST).read().strip()
+    if digest_of(LIBRARY) != digest:
+        sys.exit("library.py: library/DIGEST is not library/'s digest: `library.py digest '{}'` writes it")
+    os.makedirs(args.out, exist_ok=True)
+    out = os.path.join(args.out, f"library-{digest}.tar.xz")
+
+    def tidy(info):
+        info.uid = info.gid = 0
+        info.uname = info.gname = ""
+        info.mtime = 0
+        if info.isfile():
+            info.mode = 0o755 if info.mode & 0o100 else 0o644
+        elif info.isdir():
+            info.mode = 0o755
+        return info
+
+    with tarfile.open(out + ".part", "w:xz", preset=9) as tar:
+        for dir, subdirs, names in os.walk(LIBRARY):
+            subdirs.sort()
+            rel = os.path.relpath(dir, ROOT).replace(os.sep, "/")
+            tar.add(dir, arcname=rel, recursive=False, filter=tidy)
+            for name in sorted(names + [d for d in subdirs if os.path.islink(os.path.join(dir, d))]):
+                tar.add(os.path.join(dir, name), arcname=f"{rel}/{name}", recursive=False, filter=tidy)
+    os.replace(out + ".part", out)
+    print(out)
+
+
 def main():
-    commands = {"import": (Nightly, do_import), "merge": (Nightly, do_merge), "check": (Check, do_check)}
+    commands = {"import": (Nightly, do_import), "merge": (Nightly, do_merge), "check": (Check, do_check),
+                "digest": (Check, do_digest), "archive": (Archive, do_archive)}
     if len(sys.argv) not in (2, 3) or sys.argv[1] not in commands:
         sys.exit(f"usage: library.py {{{'|'.join(commands)}}} '<json>'\n\n{__doc__}")
     cls, run = commands[sys.argv[1]]
