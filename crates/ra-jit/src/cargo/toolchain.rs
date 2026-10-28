@@ -184,14 +184,15 @@ fn use_own(dir: &Path) {
 }
 
 /// Names rustup's toolchain at `sysroot` one way however it was named (`nightly-2026-10-25`,
-/// `nightly-2026-10-25-<host>`, a path), since the name is part of which build this is.
+/// `nightly-2026-10-25-<host>`, a path), since the name is part of which build this is, and
+/// names it when rustup's proxy picked it unnamed, as cargo run through rustup has it: what
+/// the processes this one starts ask of rustc is then asked of that toolchain's, whose answers
+/// are kept.
 fn rustup_named(sysroot: &Path) {
     let home = rustup_home().and_then(|it| dunce::canonicalize(it.join("toolchains")).ok());
     let dir = dunce::canonicalize(sysroot).ok();
     let name = dir.filter(|dir| home.is_some_and(|home| dir.parent() == Some(&*home)));
-    if std::env::var_os("RUSTUP_TOOLCHAIN").is_some()
-        && let Some(name) = name.as_ref().and_then(|it| it.file_name())
-    {
+    if let Some(name) = name.as_ref().and_then(|it| it.file_name()) {
         // SAFETY: before any thread is started.
         unsafe { std::env::set_var("RUSTUP_TOOLCHAIN", name) };
     }

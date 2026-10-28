@@ -271,19 +271,17 @@ fn dir() -> Option<PathBuf> {
     Some(caches.join("ra-jit/answers"))
 }
 
-/// The name of the question: the rustc that is asked, its arguments, what it reads of its
-/// environment and of standard input. `None` when which rustc runs is not known.
+/// The name of the question: the rustc that is asked, or what has rustup's proxy pick it, its
+/// arguments, what it reads of its environment and of standard input. `None` when which rustc
+/// runs is not known.
 fn key(command: &Command, stdin: &[u8]) -> Option<String> {
     let var = |name: &str| var_of(command, name);
-    let rustc = toolchain_rustc(command.get_program(), &var)?;
-    let is = std::fs::metadata(&rustc).ok()?;
     let mut hasher = Sha256::new();
     hasher.update(b"ra-jit answer 1\0");
-    hasher.update(rustc.as_os_str().as_encoded_bytes());
-    hasher.update([0]);
-    hasher.update(is.len().to_le_bytes());
-    let modified = is.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
-    hasher.update(modified.as_nanos().to_le_bytes());
+    match toolchain_rustc(command.get_program(), &var) {
+        Some(rustc) => identify(&mut hasher, &rustc)?,
+        None => rustup_choice(&mut hasher, command, &var)?,
+    }
     for arg in command.get_args() {
         hasher.update(arg.as_encoded_bytes());
         hasher.update([0]);
@@ -300,6 +298,90 @@ fn key(command: &Command, stdin: &[u8]) -> Option<String> {
     }
     hasher.update(stdin);
     Some(hasher.finalize().iter().map(|it| format!("{it:02x}")).collect())
+}
+
+/// Adds which file `file` is to the name of a question: its path, size and time of change.
+fn identify(hasher: &mut Sha256, file: &Path) -> Option<()> {
+    let is = std::fs::metadata(file).ok()?;
+    hasher.update(file.as_os_str().as_encoded_bytes());
+    hasher.update([0]);
+    hasher.update(is.len().to_le_bytes());
+    let modified = is.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    hasher.update(modified.as_nanos().to_le_bytes());
+    Some(())
+}
+
+/// Adds what picks the toolchain rustup's proxy runs, when no `RUSTUP_TOOLCHAIN` names one, to
+/// the name of a question: rustup's settings (its default and the directories' overrides), the
+/// toolchain files of the directory rustc runs in and of those above it, and the rustc of each
+/// toolchain rustup has, so an answer does not outlive a change to any of them. `None` when the
+/// program is not rustup's proxy, or a toolchain file may name a toolchain by its path, outside
+/// rustup's.
+fn rustup_choice(
+    hasher: &mut Sha256,
+    command: &Command,
+    var: &dyn Fn(&str) -> Option<OsString>,
+) -> Option<()> {
+    let proxy = on_path(command.get_program(), var)?;
+    if var("RUSTUP_TOOLCHAIN").is_some() || !is_rustup(&proxy) {
+        return None;
+    }
+    let home = rustup_home(var)?;
+    identify(hasher, &proxy)?;
+    hasher.update(std::fs::read(home.join("settings.toml")).unwrap_or_default());
+    let mut toolchains: Vec<PathBuf> =
+        std::fs::read_dir(home.join("toolchains")).ok()?.flatten().map(|it| it.path()).collect();
+    toolchains.sort();
+    for toolchain in toolchains {
+        let rustc = toolchain.join("bin").join(format!("rustc{}", std::env::consts::EXE_SUFFIX));
+        _ = identify(hasher, &rustc);
+    }
+    let cwd = match command.get_current_dir() {
+        Some(dir) => std::path::absolute(dir).ok()?,
+        None => std::env::current_dir().ok()?,
+    };
+    hasher.update(cwd.as_os_str().as_encoded_bytes());
+    for dir in cwd.ancestors() {
+        for name in ["rust-toolchain", "rust-toolchain.toml"] {
+            let Ok(text) = std::fs::read(dir.join(name)) else { continue };
+            if names_a_path(&text) {
+                return None;
+            }
+            hasher.update(dir.join(name).as_os_str().as_encoded_bytes());
+            hasher.update([0]);
+            hasher.update(&text);
+        }
+    }
+    Some(())
+}
+
+/// Whether `proxy` is rustup's own binary under another name, as rustup installs its proxies:
+/// linked to the `rustup` beside it.
+fn is_rustup(proxy: &Path) -> bool {
+    let rustup = proxy.with_file_name(format!("rustup{}", std::env::consts::EXE_SUFFIX));
+    let (Ok(proxy), Ok(rustup)) = (std::fs::metadata(proxy), std::fs::metadata(rustup)) else {
+        return false;
+    };
+    proxy.len() == rustup.len() && proxy.modified().ok() == rustup.modified().ok()
+}
+
+/// Whether a toolchain file may name its toolchain by a path: `path = "..."`, or a legacy
+/// file's one line.
+fn names_a_path(text: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(text);
+    let legacy = !text.contains('[');
+    text.lines().any(|line| line.trim_start().starts_with("path"))
+        || (legacy && text.contains(['/', '\\']))
+}
+
+/// Where rustup keeps its toolchains: `RUSTUP_HOME`, or `.rustup` in the home directory, as
+/// rustup has it.
+fn rustup_home(var: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    if let Some(home) = var("RUSTUP_HOME").filter(|it| !it.is_empty()) {
+        return Some(PathBuf::from(home));
+    }
+    let home = var(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
+    Some(PathBuf::from(home).join(".rustup"))
 }
 
 /// The variable `name` as `command` will have it.
@@ -324,14 +406,7 @@ pub(crate) fn toolchain_rustc(
     program: &OsStr,
     var: &dyn Fn(&str) -> Option<OsString>,
 ) -> Option<PathBuf> {
-    let found = if Path::new(program).components().count() > 1 {
-        PathBuf::from(program)
-    } else {
-        let paths = var("PATH")?;
-        let name = Path::new(program).with_extension(std::env::consts::EXE_EXTENSION);
-        std::env::split_paths(&paths).map(|dir| dir.join(&name)).find(|it| it.is_file())?
-    };
-    let real = std::fs::canonicalize(found).ok()?;
+    let real = std::fs::canonicalize(on_path(program, var)?).ok()?;
     if in_sysroot(&real) {
         return Some(real);
     }
@@ -339,10 +414,20 @@ pub(crate) fn toolchain_rustc(
     let dir = if toolchain.is_absolute() {
         toolchain
     } else {
-        PathBuf::from(var("RUSTUP_HOME")?).join("toolchains").join(toolchain)
+        rustup_home(var)?.join("toolchains").join(toolchain)
     };
     let rustc = dir.join("bin").join(format!("rustc{}", std::env::consts::EXE_SUFFIX));
     std::fs::canonicalize(rustc).ok()
+}
+
+/// The file `program` is, found on `PATH` when it is a bare name.
+fn on_path(program: &OsStr, var: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    if Path::new(program).components().count() > 1 {
+        return Some(PathBuf::from(program));
+    }
+    let paths = var("PATH")?;
+    let name = Path::new(program).with_extension(std::env::consts::EXE_EXTENSION);
+    std::env::split_paths(&paths).map(|dir| dir.join(&name)).find(|it| it.is_file())
 }
 
 /// Whether `rustc` is a toolchain's own: in the `bin` of a sysroot that has `lib/rustlib`.
@@ -423,6 +508,67 @@ mod tests {
         assert_eq!(found, Some(std::fs::canonicalize(&rustc).unwrap()));
         // the toolchain's own rustc is itself
         assert_eq!(toolchain_rustc(rustc.as_os_str(), &var), found);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// rustup's proxy, told no toolchain, runs the one its settings and the project's toolchain
+    /// file pick: what it is asked is kept until one of them, or a toolchain, changes.
+    #[test]
+    fn a_question_to_rustups_proxy_is_named_by_what_picks_its_toolchain() {
+        let exe = |name: &str| format!("{name}{}", std::env::consts::EXE_SUFFIX);
+        let root = std::env::temp_dir().join(format!("ra-jit-rustup-{}", std::process::id()));
+        let (bin, home, project) = (root.join("cargo/bin"), root.join("home"), root.join("p/src"));
+        let toolchain = home.join(".rustup/toolchains/nightly-x");
+        let settings = home.join(".rustup/settings.toml");
+        let file = root.join("p/rust-toolchain.toml");
+        for dir in [&bin, &project, &toolchain.join("bin"), &toolchain.join("lib/rustlib")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(bin.join(exe("rustup")), "rustup").unwrap();
+        std::fs::hard_link(bin.join(exe("rustup")), bin.join(exe("rustc"))).unwrap();
+        let rustc = toolchain.join("bin").join(exe("rustc"));
+        std::fs::write(&rustc, "").unwrap();
+        std::fs::write(&settings, "default_toolchain = \"nightly-x\"\n").unwrap();
+        let key = |toolchain: Option<&str>| {
+            let mut command = Command::new("rustc");
+            command.arg("--version").env("PATH", &bin).env_remove("RUSTUP_HOME");
+            command.env("HOME", &home).env("USERPROFILE", &home).current_dir(&project);
+            match toolchain {
+                Some(name) => command.env("RUSTUP_TOOLCHAIN", name),
+                None => command.env_remove("RUSTUP_TOOLCHAIN"),
+            };
+            super::key(&command, &[])
+        };
+        let mut seen = vec![key(None)];
+        assert!(seen[0].is_some());
+        assert_eq!(key(None), seen[0]);
+        std::fs::write(&settings, "default_toolchain = \"stable-x\"\n").unwrap();
+        seen.push(key(None));
+        std::fs::write(&file, "[toolchain]\nchannel = \"nightly-x\"\n").unwrap();
+        seen.push(key(None));
+        std::fs::write(&rustc, "updated").unwrap();
+        seen.push(key(None));
+        seen.dedup();
+        assert_eq!(seen.len(), 4, "{seen:?}");
+        // A toolchain named by its path is not one of rustup's.
+        std::fs::write(&file, "[toolchain]\npath = \"/opt/rust\"\n").unwrap();
+        assert_eq!(key(None), None);
+        // Named, it is that toolchain's rustc, in rustup's home when `RUSTUP_HOME` is unset.
+        let var = |name: &str| match name {
+            "RUSTUP_TOOLCHAIN" => Some(OsString::from("nightly-x")),
+            "PATH" => Some(bin.clone().into_os_string()),
+            "HOME" | "USERPROFILE" => Some(home.clone().into_os_string()),
+            _ => None,
+        };
+        let found = toolchain_rustc(OsStr::new("rustc"), &var);
+        assert_eq!(found, Some(std::fs::canonicalize(&rustc).unwrap()));
+        assert!(key(Some("nightly-x")).is_some());
+        // A rustc beside rustup that is not rustup is not known to pick as rustup does.
+        std::fs::remove_file(&file).unwrap();
+        std::fs::remove_file(bin.join(exe("rustc"))).unwrap();
+        std::fs::write(bin.join(exe("rustc")), "#!/bin/sh\nexec /opt/rust/bin/rustc \"$@\"\n")
+            .unwrap();
+        assert_eq!(key(None), None);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
