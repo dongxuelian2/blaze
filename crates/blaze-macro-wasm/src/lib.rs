@@ -10,9 +10,10 @@
 //!
 //! Whether a module keeps state between expansions is seen, not guessed: the guest's
 //! allocator counts the bytes live, and an expansion that leaves some behind tells the host
-//! ([`Verdict`]). A module none of whose expansions did is stateless: each expansion is a
-//! fresh instance ([`expand`]), kept under what it was given and what it read ([`keyed`]),
-//! and crates that call it are frozen as any other. A module one of whose expansions did, or
+//! ([`Verdict`]). A module none of whose expansions did is stateless: each expansion runs in
+//! an instance the last one left nothing in ([`expand`]), as rustc runs every expansion in
+//! one loaded library, is kept under what it was given and what it read ([`keyed`]), and
+//! crates that call it are frozen as any other. A module one of whose expansions did, or
 //! one not seen yet, keeps an instance per calling crate for one database revision
 //! ([`Session`]): its statics, stored tokens and their spans survive its calls, a source
 //! change starts a fresh session and reruns demanded expansions, and nothing it makes is kept.
@@ -617,6 +618,9 @@ pub struct Wasm {
     pub compiled_in: Duration,
     /// Whether the store has its machine code.
     kept: std::sync::atomic::AtomicBool,
+    /// Instances whose expansion ran to the end and left nothing allocated, for the next
+    /// expansion outside a session to run in rather than instantiate the module again.
+    idle: Mutex<Vec<Session>>,
 }
 
 impl fmt::Debug for Wasm {
@@ -741,7 +745,8 @@ impl Wasm {
         };
         let compiled_in = start.elapsed();
         let kept = was_kept.into();
-        let wasm = Wasm { path: path.to_owned(), digest, identity, pre, compiled_in, kept };
+        let idle = Mutex::new(Vec::new());
+        let wasm = Wasm { path: path.to_owned(), digest, identity, pre, compiled_in, kept, idle };
         wasm.keep_code(store);
         LOADED.add(start.elapsed());
         Ok(wasm)
@@ -842,7 +847,24 @@ impl Wasm {
         Ok(Session { store, instance, root, failed: false })
     }
 
-    /// Expands the macro at `index` of [`Wasm::macros`] in a fresh instance: what is kept of
+    /// An idle instance given `state`, else a fresh one.
+    fn idle_or_new(
+        &self,
+        state: State,
+        root: Option<PathBuf>,
+    ) -> Result<Session, ProcMacroExpansionError> {
+        let idle = self.idle.lock().unwrap_or_else(|e| e.into_inner()).pop();
+        match idle {
+            Some(mut session) => {
+                *session.store.data_mut() = state;
+                session.root = root;
+                Ok(session)
+            }
+            None => self.instance_with(state, root),
+        }
+    }
+
+    /// Expands the macro at `index` of [`Wasm::macros`] outside a session: what is kept of
     /// it when the store has it, else by running it, and keeps what it made unless `store` is
     /// `None` or the expansion left state behind.
     pub fn expand(
@@ -1325,10 +1347,11 @@ impl Shapes {
     }
 }
 
-/// Expands the macro at `index` of a module whose expansions are kept under `identity` in a
-/// fresh instance: what is kept of it when the store has it, else by running it in what
-/// `wasm` gives, which is asked for only then, and keeps what it made unless `store` is `None`
-/// or the expansion left state behind.
+/// Expands the macro at `index` of a module whose expansions are kept under `identity`
+/// outside a session: what is kept of it when the store has it, else by running it in an
+/// idle instance of what `wasm` gives, which is asked for only then, and keeps what it made
+/// unless `store` is `None` or the expansion left state behind. An instance it left nothing
+/// in goes back idle.
 #[allow(clippy::too_many_arguments)]
 fn expand<'a>(
     identity: &[u8; 32],
@@ -1400,9 +1423,13 @@ fn expand<'a>(
         state.sites = [1, 2, 3];
         state.files = wasi::Files::new(root.as_deref());
         state.env = env;
-        let mut instance = wasm.instance_with(state, root.clone())?;
+        let mut instance = wasm.idle_or_new(state, root.clone())?;
         let output = instance.run(index, db, &input, attr.as_deref())?;
-        Ok((instance.store.into_data(), output))
+        let state = std::mem::replace(instance.store.data_mut(), State::empty());
+        if !state.retained {
+            wasm.idle.lock().unwrap_or_else(|e| e.into_inner()).push(instance);
+        }
+        Ok((state, output))
     });
     let mut retained = false;
     let output = ran.and_then(|(state, output)| {
