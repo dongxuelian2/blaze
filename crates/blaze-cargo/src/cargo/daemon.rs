@@ -466,6 +466,7 @@ impl Warmth {
 struct Loaded {
     generation: u128,
     root: PathBuf,
+    command_env: BTreeMap<String, String>,
     warmth: Warmth,
 }
 
@@ -585,6 +586,7 @@ impl Worker {
         let loading = Loaded {
             generation: checkout.generation,
             root: checkout.root.clone(),
+            command_env: config.command_env.clone(),
             warmth: Warmth::Loading(Instant::now()),
         };
         Ok(Worker {
@@ -1697,20 +1699,28 @@ impl Daemon {
     fn warm(&self, checkout: Checkout) -> anyhow::Result<()> {
         let id = checkout.config.id();
         let mut workers = lock(&self.workers);
-        // Source diagnostics stay valid until a source is written. A failed load has not
-        // established its inputs: configuration, even a file since deleted, may have caused
-        // it. Retry that load on the next request rather than keep its error indefinitely.
+        // Source diagnostics stay valid while source and command environment are unchanged.
+        // A failed load has not established its inputs: configuration, even a file since
+        // deleted, may have caused it. Retry it rather than keep its error indefinitely.
         let failed = workers.get(&id).and_then(|it| match lock(&it.checkouts).get(&checkout.key) {
-            Some(Loaded { generation, warmth, .. }) if *generation == checkout.generation => {
+            Some(Loaded { generation, warmth, command_env, .. })
+                if *generation == checkout.generation =>
+            {
                 match warmth {
-                    Warmth::Failed(_) | Warmth::Broken(..) => Some(warmth.clone()),
+                    Warmth::Failed(_) | Warmth::Broken(..) => {
+                        Some((warmth.clone(), command_env.clone()))
+                    }
                     _ => None,
                 }
             }
             _ => None,
         });
         match failed {
-            Some(Warmth::Broken(_, at)) if !checkout.written_since(at) => return Ok(()),
+            Some((Warmth::Broken(_, at), env))
+                if env == checkout.config.command_env && !checkout.written_since(at) =>
+            {
+                return Ok(());
+            }
             Some(_) => {
                 if let Some(old) = workers.remove(&id) {
                     old.stop();
@@ -1735,6 +1745,7 @@ impl Daemon {
                     let loading = Loaded {
                         generation: checkout.generation,
                         root: checkout.root.clone(),
+                        command_env: checkout.config.command_env.clone(),
                         warmth: Warmth::Loading(Instant::now()),
                     };
                     checkouts.insert(checkout.key.clone(), loading);

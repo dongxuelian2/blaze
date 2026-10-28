@@ -4,16 +4,18 @@
 Usage: pathenv.py [INPUT], one JSON object inline, in a file, or '-' for stdin:
     {"blaze": "/path/to/blaze", "work": "/new/scratch/directory"}
 
-Identical PATH, an empty prefix and restoring PATH must reuse the loaded worker. A script
-that selects a tool through PATH must see each command's tool and environment. Each result
-is compared with a fresh reference Cargo build. Worker PIDs, directory identities, loads,
-reloads, output and wall times are recorded in work/results.json; times do not gate.
+Identical PATH, an empty prefix and restoring PATH must reuse the loaded worker. Scripts,
+native proc macros and an external assembler use each command's tool and environment,
+including removing a tool from PATH. Each result is compared with a fresh Cargo build.
+Worker PIDs, directory identities, loads, reloads, output and wall times are recorded in
+work/results.json; times do not gate. The external assembler fixture is Linux x86-64.
 """
 import dataclasses
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -73,6 +75,55 @@ fn main() {
     "src/main.rs": 'fn main() { println!("{}:{}", env!("SELECTED_TOOL"), env!("SCRIPT_VALUE")); }\n',
 }
 
+NATIVE = {
+    "Cargo.toml": '[package]\nname = "path-env-native"\nversion = "0.0.0"\nedition = "2021"\n'
+                  '[dependencies]\npath-env-macros = { path = "macros" }\n[workspace]\n',
+    "src/main.rs": 'fn main() { println!("{}", path_env_macros::selected!()); }\n',
+    "macros/Cargo.toml": '[package]\nname = "path-env-macros"\nversion = "0.0.0"\nedition = "2021"\n'
+                         '[lib]\nproc-macro = true\n',
+    "macros/src/lib.rs": '''use proc_macro::TokenStream;
+#[proc_macro]
+pub fn selected(_: TokenStream) -> TokenStream {
+    let selected = match std::process::Command::new("blaze-path-tool").output() {
+        Ok(tool) => {
+            assert!(tool.status.success());
+            String::from_utf8(tool.stdout).unwrap().trim().to_owned()
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "no tool".to_owned(),
+        Err(error) => panic!("blaze-path-tool on PATH: {error}"),
+    };
+    format!("{selected:?}").parse().unwrap()
+}
+''',
+}
+
+ASSEMBLY = dict(PLAIN, **{
+    "src/main.rs": '''fn main() {
+    let value: usize;
+    unsafe { core::arch::asm!("mov {value}, 17", value = out(reg) value); }
+    println!("{value}");
+}
+''',
+})
+
+REQUIRED = dict(NATIVE, **{
+    "macros/src/lib.rs": NATIVE["macros/src/lib.rs"].replace(
+        'Err(error) if error.kind() == std::io::ErrorKind::NotFound => "no tool".to_owned(),',
+        'Err(error) if error.kind() == std::io::ErrorKind::NotFound => panic!("tool on PATH: {error}"),',
+    ),
+})
+
+# The script's directives stay identical while its generated file changes.
+GENERATED = dict(SCRIPT, **{
+    "build.rs": SCRIPT["build.rs"].replace(
+        '    println!("cargo:rustc-env=SELECTED_TOOL={}", tool.trim());\n'
+        '    println!("cargo:rustc-env=SCRIPT_VALUE={value}");',
+        '    let out = std::path::PathBuf::from(env::var_os("OUT_DIR").unwrap());\n'
+        '    std::fs::write(out.join("selected"), format!("{}:{value}", tool.trim())).unwrap();',
+    ),
+    "src/main.rs": 'fn main() { println!("{}", include_str!(concat!(env!("OUT_DIR"), "/selected"))); }\n',
+})
+
 
 def write_workspace(root, files):
     for name, text in files.items():
@@ -97,12 +148,22 @@ def main(config):
     empty = work / "empty"
     empty.mkdir()
     tools = []
+    assembler_log = work / "assembler.log"
+    assembly_case = sys.platform.startswith("linux") and os.uname().machine in ("x86_64", "amd64")
+    clang = shutil.which("clang")
+    if assembly_case and clang is None:
+        sys.exit("pathenv.py: the external assembler fixture requires clang")
     for name in ("first", "second"):
         directory = work / name
         directory.mkdir()
         tool = directory / "blaze-path-tool"
         tool.write_text(f"#!/bin/sh\nprintf '%s\\n' '{name}'\n")
         tool.chmod(0o755)
+        if clang:
+            wrapper = directory / "clang"
+            wrapper.write_text(f"#!/bin/sh\nprintf '%s\\n' '{name}' >> {shlex.quote(str(assembler_log))}\n"
+                               f"exec {shlex.quote(clang)} \"$@\"\n")
+            wrapper.chmod(0o755)
         tools.append(directory)
 
     def check(label, held, detail=""):
@@ -118,24 +179,45 @@ def main(config):
     def sequence(name, files, steps):
         ws, home = work / name, work / (name + "-home")
         write_workspace(ws, files)
+        native = name in ("native", "required")
+        if native:
+            # The macro sandbox can read its workspace; keep the selected tools inside it.
+            for directory in tools:
+                shutil.copytree(directory, ws / directory.name)
         base = base_env(str(home))
         base.update(BLAZE_SPARE="0", BLAZE_MEMORY_MAX="off", BLAZE_IDLE_SECS="3600")
         base["PATH"] = str(blaze.parent) + os.pathsep + base["PATH"]
         base.pop("SCRIPT_VALUE", None)
-        cargo = shutil.which("cargo", path=base["PATH"])
-        if cargo is None:
-            raise RuntimeError("the pinned Cargo reference is not on PATH")
+        if native:
+            base["BLAZE_PROC_MACRO_WASM"] = "0"
+        if name == "assembler":
+            base["BLAZE_ASSEMBLER"] = "cc"
+        rustup = shutil.which("rustup", path=base["PATH"])
+        if rustup is None:
+            raise RuntimeError("rustup is needed to locate the pinned reference tools")
+        def reference_tool(name):
+            found, _ = run([rustup, "which", "--toolchain", TOOLCHAIN, name], ws, base)
+            if found.returncode:
+                raise RuntimeError(found.stderr)
+            return found.stdout.strip()
+        cargo, rustc = reference_tool("cargo"), reference_tool("rustc")
         first_workers = None
         first_loads = None
         try:
             for label, prefix, value in steps:
                 env = dict(base)
+                if native:
+                    prefix = [ws / path.name if path in tools else path for path in prefix]
                 env["PATH"] = os.pathsep.join([str(path) for path in prefix] + [base["PATH"]])
                 if value is not None:
                     env["SCRIPT_VALUE"] = value
-                reference = dict(env, CARGO_TARGET_DIR=str(work / "reference" / name / label))
-                expected, _ = run([cargo, f"+{TOOLCHAIN}", "run", "--offline", "-q"], ws, reference)
-                check(f"{name}/{label}: reference builds", expected.returncode == 0, expected.stderr[-500:] if expected.returncode else "")
+                # Use the pinned tools directly, without rustup changing their PATH.
+                reference = dict(env, RUSTC=rustc, CARGO_TARGET_DIR=str(work / "reference" / name / label))
+                expected, _ = run([cargo, "run", "--offline", "-q"], ws, reference)
+                missing = name == "required" and label == "missing"
+                check(f"{name}/{label}: reference verdict", (expected.returncode != 0) if missing else expected.returncode == 0,
+                      expected.stderr[-500:] if expected.returncode and not missing else "")
+                assembled_before = assembler_log.read_text().splitlines() if assembler_log.exists() else []
                 ran, elapsed = run([str(blaze), "run", "-q"], ws, env)
                 (work / f"{name}-{label}.stdout").write_text(ran.stdout)
                 (work / f"{name}-{label}.stderr").write_text(ran.stderr)
@@ -151,10 +233,24 @@ def main(config):
                               status=status.stdout, exit=ran.returncode, stdout=ran.stdout,
                               reference_exit=expected.returncode, reference_stdout=expected.stdout)
                 results.append(record)
+                if name == "assembler":
+                    assembled = assembler_log.read_text().splitlines() if assembler_log.exists() else []
+                    used = assembled[len(assembled_before):]
+                    record["assembler_runs"] = used
+                    if label == "identical":
+                        check(f"{name}/{label}: compiled state reused", not used, repr(used))
+                    else:
+                        selected = "second" if label == "different-tool" else "first"
+                        cached = label in ("restored", "empty-prefix")
+                        check(f"{name}/{label}: current tool assembled", (bool(used) or cached) and
+                              all(tool == selected for tool in used), repr(used))
                 print(json.dumps(record), flush=True)
-                check(f"{name}/{label}: agrees with Cargo", expected.returncode == 0 and
+                check(f"{name}/{label}: agrees with Cargo", (missing or expected.returncode == 0) and
                       (ran.returncode, ran.stdout) == (expected.returncode, expected.stdout),
                       f"exit {ran.returncode}, {ran.stdout!r}" + (f", {ran.stderr[-500:]}" if ran.returncode else ""))
+                if missing:
+                    check(f"{name}/{label}: source error names PATH", "PATH" in ran.stderr)
+                    continue
                 if first_workers is None:
                     first_workers, first_loads = workers, loads
                     check(f"{name}: one initial worker", len(workers) == 1, str(workers))
@@ -171,14 +267,32 @@ def main(config):
             ("initial", [], None), ("identical", [], None),
             ("empty-prefix", [empty], None), ("restored", [], None),
         ])
-        sequence("script", SCRIPT, [
+        script_steps = [
             ("initial", [tools[0]], "alpha"), ("identical", [tools[0]], "alpha"),
             ("empty-prefix", [empty, tools[0]], "alpha"),
             ("different-tool", [tools[1]], "alpha"),
             ("different-value", [tools[1]], "beta"),
             ("unset-value", [tools[1]], None),
             ("restored", [tools[0]], "alpha"),
+        ]
+        sequence("script", SCRIPT, script_steps)
+        sequence("generated", GENERATED, script_steps)
+        sequence("native", NATIVE, [
+            ("initial", [tools[0]], None), ("identical", [tools[0]], None),
+            ("empty-prefix", [empty, tools[0]], None),
+            ("different-tool", [tools[1]], None), ("tool-removed", [], None),
+            ("restored", [tools[0]], None),
         ])
+        sequence("required", REQUIRED, [
+            ("missing", [], None), ("recovered", [tools[0]], None),
+            ("identical", [tools[0]], None),
+        ])
+        if assembly_case:
+            sequence("assembler", ASSEMBLY, [
+                ("initial", [tools[0]], None), ("identical", [tools[0]], None),
+                ("empty-prefix", [empty, tools[0]], None),
+                ("different-tool", [tools[1]], None), ("restored", [tools[0]], None),
+            ])
     finally:
         (work / "results.json").write_text(json.dumps(dict(results=results, failures=failed), indent=2) + "\n")
     print("PASS" if not failed else "FAIL: " + "; ".join(failed), flush=True)
