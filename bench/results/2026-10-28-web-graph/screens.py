@@ -10,7 +10,9 @@ the edit and shoots it during the spread and once settled, and each side tab.
 
 from __future__ import annotations
 
+import base64
 import dataclasses
+import hashlib
 import http.server
 import json
 import sys
@@ -55,14 +57,48 @@ def parse_input(raw: str) -> Input:
     return Input(**v)
 
 
-def serve(inp: Input) -> tuple[http.server.ThreadingHTTPServer, int]:
-    roots = [Path(inp.assets).resolve(), Path(inp.fixtures).resolve()]
+def serve(assets: str, fixtures: str, ws=None) -> tuple[http.server.ThreadingHTTPServer, int]:
+    """Serves the page and the fixtures at / and under any /s/<name>/. With `ws`, a websocket
+    request for /s/<name>/ws calls ws(name, send) with send(bytes | str) and closes when it returns."""
+    roots = [Path(assets).resolve(), Path(fixtures).resolve()]
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         extensions_map = {".js": "text/javascript", ".css": "text/css", ".html": "text/html", "": "application/octet-stream"}
 
+        def do_GET(self) -> None:
+            parts = self.path.split("?", 1)[0].split("/")
+            if ws and len(parts) == 4 and parts[1] == "s" and parts[3] == "ws" and self.headers.get("Upgrade", "").lower() == "websocket":
+                self.websocket(parts[2])
+            else:
+                super().do_GET()
+
+        def websocket(self, name: str) -> None:
+            key = self.headers["Sec-WebSocket-Key"]
+            accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+            self.send_response(101)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept)
+            self.end_headers()
+            self.wfile.flush()
+
+            def send(m: bytes | str) -> None:
+                data, op = (m.encode(), 1) if isinstance(m, str) else (m, 2)
+                n = len(data)
+                head = bytes([0x80 | op]) + (bytes([n]) if n < 126 else bytes([126]) + n.to_bytes(2, "big") if n < 65536 else bytes([127]) + n.to_bytes(8, "big"))
+                self.wfile.write(head + data)
+                self.wfile.flush()
+
+            ws(name, send)
+            self.wfile.write(bytes([0x88, 0]))
+            self.wfile.flush()
+            self.close_connection = True
+
         def translate_path(self, path: str) -> str:
             rel = path.split("?", 1)[0].lstrip("/") or "index.html"
+            if rel.startswith("s/"):
+                rel = rel.split("/", 2)[2] if rel.count("/") >= 2 else ""
+            rel = rel or "index.html"
             for root in roots:
                 p = (root / rel).resolve()
                 if root in p.parents and p.is_file():
@@ -97,7 +133,7 @@ def main() -> None:
     inp = parse_input(sys.argv[1])
     out = Path(inp.out)
     out.mkdir(parents=True, exist_ok=True)
-    srv, port = serve(inp)
+    srv, port = serve(inp.assets, inp.fixtures)
     log: list[str] = []
     with sync_playwright() as p:
         b = p.chromium.launch(executable_path=inp.chromium, headless=True,

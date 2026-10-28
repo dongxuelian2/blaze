@@ -21,7 +21,7 @@ const SPREAD_MAX = 2000;
 const state = {
   model: null, view: null, began: null, rebuilt: [], unlisted: 0, analysis: null,
   pendingFlash: new Set(), flushTimer: 0, spreadBuild: null, litThisBuild: 0, dead: false,
-  connection: "connecting", ws: null, mouse: [0, 0],
+  connection: "connecting", ws: null, mouse: [0, 0], snapshots: 0, records: 0,
 };
 const tooltip = new Tooltip();
 let dag, search, treemap, timeline, editView;
@@ -33,7 +33,7 @@ function fatal(title, detail) {
   $("error-title").textContent = title;
   $("error-detail").textContent = detail;
   $("error").hidden = false;
-  if (state.ws && state.ws.readyState <= 1) state.ws.close(1003, "the page refused what it was sent");
+  if (state.ws && state.ws.readyState <= 1) state.ws.close(4000, "the page refused what it was sent");
   setConnection("stopped");
 }
 
@@ -113,6 +113,7 @@ function onSnapshot(bytes) {
   editView.root.replaceChildren(el("div", "note", "No functions compiled again in the last build."));
   showTab(currentTab);
   status();
+  state.snapshots++;
 }
 
 function onRecordBytes(bytes) {
@@ -132,6 +133,7 @@ function onRecord(r) {
     fatal("A record came before the snapshot", JSON.stringify(r.event.type));
     return;
   }
+  state.records++;
   const ev = r.event;
   switch (ev.type) {
     case "Began":
@@ -377,6 +379,10 @@ window.blazePage = {
   get animating() { return state.view?.animating ?? false; },
   get layoutRunning() { return state.view?.layoutRunning ?? false; },
   get dead() { return state.dead; },
+  get snapshots() { return state.snapshots; },
+  get records() { return state.records; },
+  get nodes() { return state.model?.n ?? 0; },
+  get connection() { return state.connection; },
   showTab, select: (i) => select(i, false),
   find: (name) => state.model?.names.indexOf(name) ?? -1,
 };
