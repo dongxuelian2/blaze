@@ -13,6 +13,16 @@ pub struct Engine {
     pub pin: fn(&[String]) -> anyhow::Result<i32>,
     /// Which blaze this is and why it is the one that runs, for `blaze --version`.
     pub why_this_one: fn() -> String,
+    /// Says a record of the build this process does (`events::say` of the engine).
+    pub say: fn(blaze_protocol::events::Event),
+}
+
+/// Says `event` of the build this process does; nothing when no engine was handed over, as in
+/// this crate's own tests.
+pub fn say(event: blaze_protocol::events::Event) {
+    if let Some(engine) = ENGINE.get() {
+        (engine.say)(event);
+    }
 }
 
 static ENGINE: OnceLock<Engine> = OnceLock::new();

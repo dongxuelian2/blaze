@@ -7723,6 +7723,7 @@ pub fn main() -> anyhow::Result<()> {
         stand_ins: link::stand_ins,
         pin: versions::pin,
         why_this_one: versions::why_this_one,
+        say: events::say,
     });
     trace::began();
     renamed::refuse_old_settings();
