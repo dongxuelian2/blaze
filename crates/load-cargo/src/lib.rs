@@ -159,6 +159,18 @@ pub struct Loaded {
 }
 
 impl Loaded {
+    /// Drops the native servers so the next add starts them with the load's environment.
+    /// An expansion can set a variable, but cannot unset one inherited by a server.
+    pub fn reset_proc_macro_servers(&mut self) -> bool {
+        let had = self.proc_macro_server.is_some()
+            || self.listed_server.is_some()
+            || self.unsandboxed_servers.iter().any(Option::is_some);
+        self.proc_macro_server = None;
+        self.listed_server = None;
+        self.unsandboxed_servers = [None, None];
+        had
+    }
+
     pub fn workspaces(&self) -> &[ProjectWorkspace] {
         &self.workspaces
     }

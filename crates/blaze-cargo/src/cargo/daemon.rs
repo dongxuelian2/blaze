@@ -2050,6 +2050,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn command_paths_share_a_worker_but_keep_their_own_environment() {
+        let mut config = WorkerConfig {
+            repository: "/repo/.git".into(),
+            project: "".into(),
+            cfg_test: false,
+            selection: Default::default(),
+            env: BTreeMap::new(),
+            command_env: BTreeMap::from([("PATH".to_owned(), "/tools/first".to_owned())]),
+            whole: true,
+        };
+        let first = config.id();
+        config.command_env.insert("PATH".to_owned(), "/empty:/tools/first".to_owned());
+        assert_eq!(config.id(), first);
+        assert_eq!(
+            config.builds_env().get("PATH").map(String::as_str),
+            Some("/empty:/tools/first")
+        );
+        config.command_env.remove("PATH");
+        assert_eq!(config.id(), first);
+        assert!(!config.builds_env().contains_key("PATH"));
+        config.env.insert("RUSTFLAGS".to_owned(), "--cfg other".to_owned());
+        assert_ne!(config.id(), first);
+    }
+
+    #[test]
     fn a_watcher_is_handed_the_builds_it_watches_and_a_workspace_keeps_its_last() {
         let began =
             |root: &str| Event::Began { build: 0, command: "build".into(), root: root.into() };

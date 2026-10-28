@@ -209,7 +209,13 @@ impl Inputs {
         let scripts = self.checkouts.iter().find(|it| it.root == root);
         let scripts = scripts.and_then(|it| it.scripts.as_ref());
         let read = scripts.into_iter().flat_map(|it| it.variables.iter().map(|it| &*it.0));
-        FLAGS.iter().copied().chain(read).map(|it| (it.to_owned(), env.get(it))).collect()
+        FLAGS
+            .iter()
+            .copied()
+            .chain(read)
+            .chain(["PATH"])
+            .map(|it| (it.to_owned(), env.get(it)))
+            .collect()
     }
 }
 
@@ -229,6 +235,9 @@ impl Scripts {
         }));
         for package in cargo.packages() {
             let Some(out_dir) = build_scripts.out_dir(package) else { continue };
+            // A script can resolve a tool without declaring PATH. Re-run it with the new
+            // search path; unchanged output keeps the workspace and its compiled state.
+            variables.push(("PATH".to_owned(), run_with(config, "PATH")));
             let root: &Path = cargo[package].manifest.parent().as_ref();
             let said = Said::read(out_dir.as_ref());
             variables.extend(said.variables.into_iter().map(|it| {
