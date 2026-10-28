@@ -105,6 +105,10 @@ ASSEMBLY = dict(PLAIN, **{
 ''',
 })
 
+REQUIRED = dict(PLAIN, **{
+    "src/main.rs": 'fn main() { println!("{}", env!("PATH")); }\n',
+})
+
 
 def write_workspace(root, files):
     for name, text in files.items():
@@ -198,7 +202,9 @@ def main(config):
                 # its toolchain's bin directory, which would change the reference input.
                 reference = dict(env, RUSTC=rustc, CARGO_TARGET_DIR=str(work / "reference" / name / label))
                 expected, _ = run([cargo, "run", "--offline", "-q"], ws, reference)
-                check(f"{name}/{label}: reference builds", expected.returncode == 0, expected.stderr[-500:] if expected.returncode else "")
+                missing = name == "required" and label == "missing"
+                check(f"{name}/{label}: reference verdict", (expected.returncode != 0) if missing else expected.returncode == 0,
+                      expected.stderr[-500:] if expected.returncode and not missing else "")
                 assembled_before = assembler_log.read_text().splitlines() if assembler_log.exists() else []
                 ran, elapsed = run([str(blaze), "run", "-q"], ws, env)
                 (work / f"{name}-{label}.stdout").write_text(ran.stdout)
@@ -225,9 +231,12 @@ def main(config):
                         selected = "second" if label == "different-tool" else "first"
                         check(f"{name}/{label}: current tool assembled", bool(used) and set(used) == {selected}, repr(used))
                 print(json.dumps(record), flush=True)
-                check(f"{name}/{label}: agrees with Cargo", expected.returncode == 0 and
+                check(f"{name}/{label}: agrees with Cargo", (missing or expected.returncode == 0) and
                       (ran.returncode, ran.stdout) == (expected.returncode, expected.stdout),
                       f"exit {ran.returncode}, {ran.stdout!r}" + (f", {ran.stderr[-500:]}" if ran.returncode else ""))
+                if missing:
+                    check(f"{name}/{label}: source error names PATH", "PATH" in ran.stderr)
+                    continue
                 if first_workers is None:
                     first_workers, first_loads = workers, loads
                     check(f"{name}: one initial worker", len(workers) == 1, str(workers))
@@ -257,6 +266,9 @@ def main(config):
             ("empty-prefix", [empty, tools[0]], None),
             ("different-tool", [tools[1]], None), ("unset-path", None, None),
             ("restored", [tools[0]], None),
+        ])
+        sequence("required", REQUIRED, [
+            ("missing", None, None), ("recovered", [], None), ("identical", [], None),
         ])
         if assembly_case:
             sequence("assembler", ASSEMBLY, [
