@@ -1700,8 +1700,8 @@ impl Daemon {
         let id = checkout.config.id();
         let mut workers = lock(&self.workers);
         // Source diagnostics stay valid while source and command environment are unchanged.
-        // A failed load has not established its inputs: configuration, even a file since deleted, may have caused
-        // it. Retry that load on the next request rather than keep its error indefinitely.
+        // A failed load has not established its inputs: configuration, even a file since
+        // deleted, may have caused it. Retry it rather than keep its error indefinitely.
         let failed = workers.get(&id).and_then(|it| match lock(&it.checkouts).get(&checkout.key) {
             Some(Loaded { generation, warmth, command_env, .. })
                 if *generation == checkout.generation =>

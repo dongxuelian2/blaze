@@ -6,7 +6,7 @@ Usage: pathenv.py [INPUT], one JSON object inline, in a file, or '-' for stdin:
 
 Identical PATH, an empty prefix and restoring PATH must reuse the loaded worker. Scripts,
 native proc macros and an external assembler use each command's tool and environment,
-including an unset PATH. Each result is compared with a fresh reference Cargo build.
+including removing a tool from PATH. Each result is compared with a fresh Cargo build.
 Worker PIDs, directory identities, loads, reloads, output and wall times are recorded in
 work/results.json; times do not gate. The external assembler fixture is Linux x86-64.
 """
@@ -84,12 +84,13 @@ NATIVE = {
     "macros/src/lib.rs": '''use proc_macro::TokenStream;
 #[proc_macro]
 pub fn selected(_: TokenStream) -> TokenStream {
-    let selected = if std::env::var_os("PATH").is_none() {
-        "unset".to_owned()
-    } else {
-        let tool = std::process::Command::new("blaze-path-tool").output().unwrap();
-        assert!(tool.status.success());
-        String::from_utf8(tool.stdout).unwrap().trim().to_owned()
+    let selected = match std::process::Command::new("blaze-path-tool").output() {
+        Ok(tool) => {
+            assert!(tool.status.success());
+            String::from_utf8(tool.stdout).unwrap().trim().to_owned()
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "no tool".to_owned(),
+        Err(error) => panic!("blaze-path-tool on PATH: {error}"),
     };
     format!("{selected:?}").parse().unwrap()
 }
@@ -105,8 +106,11 @@ ASSEMBLY = dict(PLAIN, **{
 ''',
 })
 
-REQUIRED = dict(PLAIN, **{
-    "src/main.rs": 'fn main() { println!("{}", env!("PATH")); }\n',
+REQUIRED = dict(NATIVE, **{
+    "macros/src/lib.rs": NATIVE["macros/src/lib.rs"].replace(
+        'Err(error) if error.kind() == std::io::ErrorKind::NotFound => "no tool".to_owned(),',
+        'Err(error) if error.kind() == std::io::ErrorKind::NotFound => panic!("tool on PATH: {error}"),',
+    ),
 })
 
 # The script's directives stay identical while its generated file changes.
@@ -175,7 +179,8 @@ def main(config):
     def sequence(name, files, steps):
         ws, home = work / name, work / (name + "-home")
         write_workspace(ws, files)
-        if name == "native":
+        native = name in ("native", "required")
+        if native:
             # The macro sandbox can read its workspace; keep the selected tools inside it.
             for directory in tools:
                 shutil.copytree(directory, ws / directory.name)
@@ -183,7 +188,7 @@ def main(config):
         base.update(BLAZE_SPARE="0", BLAZE_MEMORY_MAX="off", BLAZE_IDLE_SECS="3600")
         base["PATH"] = str(blaze.parent) + os.pathsep + base["PATH"]
         base.pop("SCRIPT_VALUE", None)
-        if name == "native":
+        if native:
             base["BLAZE_PROC_MACRO_WASM"] = "0"
         if name == "assembler":
             base["BLAZE_ASSEMBLER"] = "cc"
@@ -201,16 +206,12 @@ def main(config):
         try:
             for label, prefix, value in steps:
                 env = dict(base)
-                if prefix is None:
-                    env.pop("PATH", None)
-                else:
-                    if name == "native":
-                        prefix = [ws / path.name if path in tools else path for path in prefix]
-                    env["PATH"] = os.pathsep.join([str(path) for path in prefix] + [base["PATH"]])
+                if native:
+                    prefix = [ws / path.name if path in tools else path for path in prefix]
+                env["PATH"] = os.pathsep.join([str(path) for path in prefix] + [base["PATH"]])
                 if value is not None:
                     env["SCRIPT_VALUE"] = value
-                # Calling Cargo directly preserves an absent PATH; the rustup proxy adds
-                # its toolchain's bin directory, which would change the reference input.
+                # Use the pinned tools directly, without rustup changing their PATH.
                 reference = dict(env, RUSTC=rustc, CARGO_TARGET_DIR=str(work / "reference" / name / label))
                 expected, _ = run([cargo, "run", "--offline", "-q"], ws, reference)
                 missing = name == "required" and label == "missing"
@@ -279,11 +280,12 @@ def main(config):
         sequence("native", NATIVE, [
             ("initial", [tools[0]], None), ("identical", [tools[0]], None),
             ("empty-prefix", [empty, tools[0]], None),
-            ("different-tool", [tools[1]], None), ("unset-path", None, None),
+            ("different-tool", [tools[1]], None), ("tool-removed", [], None),
             ("restored", [tools[0]], None),
         ])
         sequence("required", REQUIRED, [
-            ("missing", None, None), ("recovered", [], None), ("identical", [], None),
+            ("missing", [], None), ("recovered", [tools[0]], None),
+            ("identical", [tools[0]], None),
         ])
         if assembly_case:
             sequence("assembler", ASSEMBLY, [
