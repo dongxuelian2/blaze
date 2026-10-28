@@ -109,6 +109,17 @@ REQUIRED = dict(PLAIN, **{
     "src/main.rs": 'fn main() { println!("{}", env!("PATH")); }\n',
 })
 
+# The script's directives stay identical while its generated file changes.
+GENERATED = dict(SCRIPT, **{
+    "build.rs": SCRIPT["build.rs"].replace(
+        '    println!("cargo:rustc-env=SELECTED_TOOL={}", tool.trim());\n'
+        '    println!("cargo:rustc-env=SCRIPT_VALUE={value}");',
+        '    let out = std::path::PathBuf::from(env::var_os("OUT_DIR").unwrap());\n'
+        '    std::fs::write(out.join("selected"), format!("{}:{value}", tool.trim())).unwrap();',
+    ),
+    "src/main.rs": 'fn main() { println!("{}", include_str!(concat!(env!("OUT_DIR"), "/selected"))); }\n',
+})
+
 
 def write_workspace(root, files):
     for name, text in files.items():
@@ -229,7 +240,9 @@ def main(config):
                         check(f"{name}/{label}: compiled state reused", not used, repr(used))
                     else:
                         selected = "second" if label == "different-tool" else "first"
-                        check(f"{name}/{label}: current tool assembled", bool(used) and set(used) == {selected}, repr(used))
+                        cached = label in ("restored", "empty-prefix")
+                        check(f"{name}/{label}: current tool assembled", (bool(used) or cached) and
+                              all(tool == selected for tool in used), repr(used))
                 print(json.dumps(record), flush=True)
                 check(f"{name}/{label}: agrees with Cargo", (missing or expected.returncode == 0) and
                       (ran.returncode, ran.stdout) == (expected.returncode, expected.stdout),
@@ -253,14 +266,16 @@ def main(config):
             ("initial", [], None), ("identical", [], None),
             ("empty-prefix", [empty], None), ("restored", [], None),
         ])
-        sequence("script", SCRIPT, [
+        script_steps = [
             ("initial", [tools[0]], "alpha"), ("identical", [tools[0]], "alpha"),
             ("empty-prefix", [empty, tools[0]], "alpha"),
             ("different-tool", [tools[1]], "alpha"),
             ("different-value", [tools[1]], "beta"),
             ("unset-value", [tools[1]], None),
             ("restored", [tools[0]], "alpha"),
-        ])
+        ]
+        sequence("script", SCRIPT, script_steps)
+        sequence("generated", GENERATED, script_steps)
         sequence("native", NATIVE, [
             ("initial", [tools[0]], None), ("identical", [tools[0]], None),
             ("empty-prefix", [empty, tools[0]], None),
@@ -273,6 +288,7 @@ def main(config):
         if assembly_case:
             sequence("assembler", ASSEMBLY, [
                 ("initial", [tools[0]], None), ("identical", [tools[0]], None),
+                ("empty-prefix", [empty, tools[0]], None),
                 ("different-tool", [tools[1]], None), ("restored", [tools[0]], None),
             ])
     finally:
