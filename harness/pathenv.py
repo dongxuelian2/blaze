@@ -149,8 +149,12 @@ def main(config):
     empty.mkdir()
     tools = []
     assembler_log = work / "assembler.log"
+    linker_log = work / "linker.log"
     assembly_case = sys.platform.startswith("linux") and os.uname().machine in ("x86_64", "amd64")
     clang = shutil.which("clang")
+    cc = shutil.which("cc")
+    if cc is None:
+        sys.exit("pathenv.py: the linker fixture requires cc")
     if assembly_case and clang is None:
         sys.exit("pathenv.py: the external assembler fixture requires clang")
     for name in ("first", "second"):
@@ -159,6 +163,10 @@ def main(config):
         tool = directory / "blaze-path-tool"
         tool.write_text(f"#!/bin/sh\nprintf '%s\\n' '{name}'\n")
         tool.chmod(0o755)
+        wrapper = directory / "cc"
+        wrapper.write_text(f"#!/bin/sh\nprintf '%s\\n' '{name}' >> {shlex.quote(str(linker_log))}\n"
+                           f"exec {shlex.quote(cc)} \"$@\"\n")
+        wrapper.chmod(0o755)
         if clang:
             wrapper = directory / "clang"
             wrapper.write_text(f"#!/bin/sh\nprintf '%s\\n' '{name}' >> {shlex.quote(str(assembler_log))}\n"
@@ -218,6 +226,7 @@ def main(config):
                 check(f"{name}/{label}: reference verdict", (expected.returncode != 0) if missing else expected.returncode == 0,
                       expected.stderr[-500:] if expected.returncode and not missing else "")
                 assembled_before = assembler_log.read_text().splitlines() if assembler_log.exists() else []
+                linked_before = linker_log.read_text().splitlines() if linker_log.exists() else []
                 ran, elapsed = run([str(blaze), "run", "-q"], ws, env)
                 (work / f"{name}-{label}.stdout").write_text(ran.stdout)
                 (work / f"{name}-{label}.stderr").write_text(ran.stderr)
@@ -244,6 +253,16 @@ def main(config):
                         cached = label in ("restored", "empty-prefix")
                         check(f"{name}/{label}: current tool assembled", (bool(used) or cached) and
                               all(tool == selected for tool in used), repr(used))
+                if name == "linker":
+                    linked = linker_log.read_text().splitlines() if linker_log.exists() else []
+                    used = linked[len(linked_before):]
+                    record["linker_runs"] = used
+                    if label == "identical":
+                        check(f"{name}/{label}: linked image reused", not used, repr(used))
+                    else:
+                        selected = "second" if label == "different-tool" else "first"
+                        check(f"{name}/{label}: current tool linked", bool(used) and
+                              all(tool == selected for tool in used), repr(used))
                 print(json.dumps(record), flush=True)
                 check(f"{name}/{label}: agrees with Cargo", (missing or expected.returncode == 0) and
                       (ran.returncode, ran.stdout) == (expected.returncode, expected.stdout),
@@ -256,7 +275,7 @@ def main(config):
                     check(f"{name}: one initial worker", len(workers) == 1, str(workers))
                 else:
                     check(f"{name}/{label}: same worker", bool(first_workers) and workers == first_workers, f"{first_workers} -> {workers}")
-                    if name == "plain":
+                    if name in ("plain", "linker"):
                         check(f"{name}/{label}: workspace kept loaded", bool(first_workers) and loads == first_loads and reloads == 0,
                               f"loads {first_loads} -> {loads}, reloads {reloads}")
         finally:
@@ -286,6 +305,11 @@ def main(config):
         sequence("required", REQUIRED, [
             ("missing", [], None), ("recovered", [tools[0]], None),
             ("identical", [tools[0]], None),
+        ])
+        sequence("linker", PLAIN, [
+            ("initial", [tools[0]], None), ("identical", [tools[0]], None),
+            ("empty-prefix", [empty, tools[0]], None),
+            ("different-tool", [tools[1]], None), ("restored", [tools[0]], None),
         ])
         if assembly_case:
             sequence("assembler", ASSEMBLY, [

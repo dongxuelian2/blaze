@@ -9473,8 +9473,9 @@ fn run_holding(
                     }
                     // One build is for one process: its variables are what `env!` reads.
                     if turning {
-                        let unset_path = ide_db::base_db::process_env_var(&db, "PATH").is_some()
-                            && stream.env.get("PATH").is_none();
+                        let old_path = ide_db::base_db::process_env_var(&db, "PATH");
+                        let path_changed = old_path != stream.env.get("PATH");
+                        let unset_path = old_path.is_some() && stream.env.get("PATH").is_none();
                         checkouts
                             .cargo_config
                             .extra_env
@@ -9490,6 +9491,18 @@ fn run_holding(
                             )?;
                         }
                         prepare_macro_sessions(&db);
+                        if path_changed {
+                            // A linker and the tools it invokes resolve through PATH too.
+                            // Emit a whole object from the retained database's code: a
+                            // zero-change splice would keep the previous linker's image.
+                            for program in &mut programs {
+                                if program.args.exe.is_some() || program.args.link_cmd.is_some() {
+                                    program.known.start_again();
+                                    program.unbuilt.stale = true;
+                                }
+                            }
+                            lock(&as_built).clear();
+                        }
                         if !reading.is_empty() {
                             for program in &mut programs {
                                 program.known.touch(&db, Some(&reading));

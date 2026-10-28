@@ -8,6 +8,11 @@ each one's section: what `[Unreleased]` had, and the title of each change merged
 
 ## [Unreleased]
 
+### Fixed
+
+- Commands with different `PATH` values reuse a compilation worker while scripts, proc macros,
+  assemblers and linkers use the current command's environment (#805).
+
 ## [0.20261028.3] - 2026-10-28
 
 ### Added
