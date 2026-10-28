@@ -65,7 +65,6 @@ export class EditView {
   render(model, a, unlisted, build) {
     const rows = [];
     const head = el("div", "note");
-    const matched = a.entries.filter((e) => e.node !== null).length;
     head.textContent = a.entries.length
       ? `Build ${build} compiled ${fmtCount(a.entries.length)} again${unlisted ? ` (and ${fmtCount(unlisted)} more it did not list)` : ""}; ${fmtCount(a.roots.length)} in an edited file. Hover a row to see its path in the graph.`
       : "The last build compiled nothing again.";
