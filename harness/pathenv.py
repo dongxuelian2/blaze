@@ -119,7 +119,7 @@ def main(config):
         ws, home = work / name, work / (name + "-home")
         write_workspace(ws, files)
         base = base_env(str(home))
-        base.update(BLAZE_SPARE="off", BLAZE_MEMORY_MAX="off", BLAZE_IDLE_SECS="3600")
+        base.update(BLAZE_SPARE="0", BLAZE_MEMORY_MAX="off", BLAZE_IDLE_SECS="3600")
         base["PATH"] = str(blaze.parent) + os.pathsep + base["PATH"]
         base.pop("SCRIPT_VALUE", None)
         cargo = shutil.which("cargo", path=base["PATH"])
@@ -159,9 +159,9 @@ def main(config):
                     first_workers, first_loads = workers, loads
                     check(f"{name}: one initial worker", len(workers) == 1, str(workers))
                 else:
-                    check(f"{name}/{label}: same worker", workers == first_workers, f"{first_workers} -> {workers}")
+                    check(f"{name}/{label}: same worker", bool(first_workers) and workers == first_workers, f"{first_workers} -> {workers}")
                     if name == "plain":
-                        check(f"{name}/{label}: workspace kept loaded", loads == first_loads and reloads == 0,
+                        check(f"{name}/{label}: workspace kept loaded", bool(first_workers) and loads == first_loads and reloads == 0,
                               f"loads {first_loads} -> {loads}, reloads {reloads}")
         finally:
             run([str(blaze), "stop"], ws, base)
