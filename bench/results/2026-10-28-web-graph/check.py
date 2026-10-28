@@ -145,6 +145,8 @@ def main() -> None:
         ("records-unknown-variant", f"/index.html?{q}&records=unknown-variant.cbor", "The fixture could not be read", r'item 0: .*unknown variant "Bogus"'),
         ("records-float", f"/index.html?{q}&records=float.cbor", "The fixture could not be read", r"float"),
         ("records-missing-field", f"/index.html?{q}&records=missing-field.cbor", "The fixture could not be read", r'no field "count"'),
+        ("bad-slow", f"/index.html?{q}&slow=0", "Bad address", r"slow="),
+        ("slow-without-fixture", "/s/never-connects/?slow=5", "Bad address", r"slow="),
         ("ws-text", "/s/text/", "The server sent text", r"binary"),
         ("ws-first-not-snapshot", "/s/first-not-snapshot/", "The first message is not a snapshot", r"a2 65 61 74"),
         ("ws-bad-record", "/s/bad-record/", "A record is malformed", r"float"),

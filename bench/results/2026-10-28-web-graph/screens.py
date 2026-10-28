@@ -35,6 +35,8 @@ class Input:
     chromium: str
     layout_cap_s: int = 240
     mid_ms: int = 1600
+    slow: int = 1
+    settle_s: int = 60
     width: int = 1600
     height: int = 1000
 
@@ -142,7 +144,7 @@ def main() -> None:
         page.on("console", lambda m: log.append(f"{m.type}: {m.text}"[:400]))
         page.on("pageerror", lambda e: log.append(f"pageerror: {e}"[:2000]))
         page.add_init_script("document.addEventListener('securitypolicyviolation', e => console.error('CSP ' + e.violatedDirective + ' ' + e.blockedURI + ' ' + e.sourceFile + ':' + e.lineNumber))")
-        url = f"http://127.0.0.1:{port}/index.html?fixture={inp.snapshot}&records={inp.records}&delay=-1"
+        url = f"http://127.0.0.1:{port}/index.html?fixture={inp.snapshot}&records={inp.records}&delay=-1&slow={inp.slow}"
         t0 = time.time()
         page.goto(url)
         wait_for(page, "window.blazePage !== undefined && (blazePage.loaded || blazePage.dead)", 120)
@@ -166,7 +168,7 @@ def main() -> None:
         time.sleep(inp.mid_ms / 1000)
         page.screenshot(path=str(out / "edit-mid.png"))
         t1 = time.time()
-        while page.evaluate("blazePage.animating") and time.time() - t1 < 60:
+        while page.evaluate("blazePage.animating") and time.time() - t1 < inp.settle_s:
             time.sleep(0.5)
         time.sleep(1)
         page.screenshot(path=str(out / "edit-settled.png"))

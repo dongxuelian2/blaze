@@ -15,6 +15,7 @@ import { HOW } from "./snapshot.js";
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
+const slow = Number(params.get("slow") ?? 1);
 const FLUSH_MS = 300;
 const SPREAD_MAX = 2000;
 
@@ -104,7 +105,7 @@ function onSnapshot(bytes) {
     onSelect: (i) => select(i, true),
     onHover: (i, ev) => hoverPoint(i, ev),
     onLayout: (running) => { $("btn-layout").textContent = running ? "Pause layout" : "Run layout"; },
-  });
+  }, slow);
   state.view.graph.ready.catch((e) => fatal("cosmos.gl could not start WebGL2", String(e?.stack ?? e)));
   dag.setModel(state.model);
   search.setModel(state.model);
@@ -142,6 +143,7 @@ function onRecord(r) {
       state.unlisted = 0;
       state.analysis = null;
       state.litThisBuild = 0;
+      state.view.clearSpread();
       timeline.reset(ev);
       break;
     case "Fns": {
@@ -299,6 +301,10 @@ function init() {
   showTab("crates");
 
   const fixture = params.get("fixture");
+  if (params.has("slow") && (fixture === null || !(slow >= 1 && slow <= 100))) {
+    fatal("Bad address", "slow=<1 to 100> slows the animations of a fixture (index.html?fixture=<file>), for recording them.");
+    return;
+  }
   if (fixture !== null) runFixture(fixture, params.get("records"));
   else connect();
 }

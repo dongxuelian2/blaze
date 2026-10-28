@@ -21,10 +21,12 @@ export function nodeSize(ns) {
 }
 
 export class MainView {
-  constructor(container, model, handlers) {
+  // `slow` stretches the live animations' timing, for recording them on a software renderer.
+  constructor(container, model, handlers, slow = 1) {
     this.container = container;
     this.model = model;
     this.handlers = handlers;
+    this.slow = slow;
     this.flashes = new Map();
     this.outlined = new Set();
     this.spreadLinks = new Set();
@@ -158,7 +160,7 @@ export class MainView {
   }
 
   paintFlash(i, t0, t) {
-    const f = Math.max(0, 1 - (t - t0) / FLASH_MS);
+    const f = Math.max(0, 1 - (t - t0) / (FLASH_MS * this.slow));
     const e = f * f * (3 - 2 * f);
     const at = 4 * i;
     this.baseColor(i, this.colors, at);
@@ -187,26 +189,27 @@ export class MainView {
   }
 
   // An edit's spread: level by level from the edited functions out along the calls, each
-  // level flashing and ringed, the calls between levels lit.
+  // level flashing and ringed, the calls between levels lit while it goes. The rings stay until
+  // clearSpread (the next build).
   spread(levels, follow) {
     this.clearSpread();
     const all = levels.flatMap((l) => l.nodes);
     if (all.length === 0) return;
-    if (follow) this.graph.fitViewByPointIndices(all, 700, 0.35, false);
+    const fitMs = follow ? 700 * this.slow : 0;
+    if (follow) this.graph.fitViewByPointIndices(all, fitMs, 0.35, false);
     levels.forEach((level, d) => {
       this.spreadTimers.push(setTimeout(() => {
         for (const i of level.nodes) this.outlined.add(i);
         for (const e of level.links) this.spreadLinks.add(e);
         this.flash(level.nodes);
         this.applyHighlight();
-      }, (follow ? 700 : 0) + d * SPREAD_STEP_MS));
+      }, fitMs + d * SPREAD_STEP_MS * this.slow));
     });
     this.spreadTimers.push(setTimeout(() => {
       this.spreadTimers = [];
-      this.outlined.clear();
       this.spreadLinks.clear();
       this.applyHighlight();
-    }, (follow ? 700 : 0) + levels.length * SPREAD_STEP_MS + FLASH_MS + 2500));
+    }, fitMs + levels.length * SPREAD_STEP_MS * this.slow + FLASH_MS * this.slow + 2500));
   }
 
   clearSpread() {
@@ -214,6 +217,7 @@ export class MainView {
     this.spreadTimers = [];
     this.outlined.clear();
     this.spreadLinks.clear();
+    this.applyHighlight();
   }
 
   // ------------------------------------------------------------------ selection

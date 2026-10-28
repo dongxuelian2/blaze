@@ -214,9 +214,10 @@ def generate(inp: Input) -> tuple[list[str], list[Fn], list[tuple[int, int]], li
             pool = crate_nodes[f.krate]
         elif r < 0.93:
             pool = deeper_system[f.krate] or crate_nodes[f.krate]
-        elif r < 0.99:
+        elif r < 0.99 or crates[f.krate] not in SYSTEM:
             pool = deeper[f.krate] or deeper_system[f.krate] or crate_nodes[f.krate]
         else:
+            # std's generic code calling back into the impls it was instantiated with.
             pool = crate_nodes[rng.randrange(len(crates))]
         dst = zipf_pick(pool)
         if dst != src:
