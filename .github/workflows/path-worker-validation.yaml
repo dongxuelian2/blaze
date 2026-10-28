@@ -2,9 +2,16 @@ name: PATH worker validation
 on:
   push:
     branches: [codex/path-worker-805-validation]
+    paths: ['crates/**', 'Cargo.*', 'harness/toolchain', 'flake.*', '.github/workflows/path-worker-validation.yaml']
   workflow_dispatch:
+    inputs:
+      compiler_run:
+        description: 'Use compiler artifact from this run for harness-only checks; empty builds current source'
+        type: string
+        default: ''
 permissions:
   contents: read
+  actions: read
 jobs:
   focused:
     runs-on: ubuntu-24.04
@@ -25,9 +32,21 @@ jobs:
       # The fast/full train builds the release binary with cargo, then tests its behavior.
       - name: Build the compiler as the release train does
         id: build
+        if: inputs.compiler_run == ''
         run: nix develop --command cargo build -p blaze-engine --release --features llvm --locked
       - name: Build the pinned proc-macro server
+        if: inputs.compiler_run == ''
         run: nix develop --command python3 .github/scripts/build_release.py --server-beside target/release/blaze-engine
+      - name: Reuse the explicitly selected compiler for harness-only checks
+        if: inputs.compiler_run != ''
+        uses: actions/download-artifact@v7
+        with:
+          name: path-worker-compiler
+          run-id: ${{ inputs.compiler_run }}
+          github-token: ${{ github.token }}
+          path: target/release
+      - if: inputs.compiler_run != ''
+        run: chmod +x target/release/blaze target/release/blaze-engine target/release/blaze-rustc target/release/blaze-proc-macro-srv
       - name: Versions
         run: |
           target/release/blaze-engine --version
@@ -66,7 +85,14 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: path-worker-results
-          path: /tmp/path-worker-*
+          path: |
+            /tmp/path-worker-*/results.json
+            /tmp/path-worker-*/*.stdout
+            /tmp/path-worker-*/*.stderr
+            /tmp/path-worker-*/*.status
+            /tmp/path-worker-*/assembler.log
+            /tmp/path-worker-*/*-home/daemon.log
+            /tmp/path-worker-*/*-home/workers/*/log
           retention-days: 7
 
   gate:
