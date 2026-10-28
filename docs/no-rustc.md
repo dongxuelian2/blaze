@@ -69,9 +69,9 @@ What it does not cover:
 ## What of the downloaded nightly is still read
 
 Since 2026-10-28 the standard library's source is blaze's `library/`, and no toolchain's
-`rust-src` is read (nor its `src/llvm-project/libunwind`). An unpatched `library/` is the
-nightly's `rust-src` byte for byte, so blaze's own copy of it is downloaded as that file and
-checked against `library/DIGEST`; a patched one comes from blaze's release. What is
+`rust-src` is read or downloaded (nor its `src/llvm-project/libunwind`). blaze's own copy of
+`library/` comes from blaze's release (`library-<digest>.tar.xz`) and is checked against
+`library/DIGEST`. What is
 left of the download, each piece for a rustc site this plan removes:
 
 | Piece | Read by | Until |

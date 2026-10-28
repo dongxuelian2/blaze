@@ -1,6 +1,6 @@
 //! The source of the standard library blaze compiles: `library/` of the repository this blaze
 //! was built from (docs/toolchain.md, "The standard library: library/"), the Rust project's
-//! at the commit of blaze's nightly with blaze's changes (`library/PATCHES.md`). It is known by
+//! at the commit of blaze's nightly with blaze's changes to it. It is known by
 //! its digest (`library/DIGEST`, written by `harness/library.py`), which is what the store keys
 //! the standard library by, and it is the only source of the standard library blaze reads: no
 //! toolchain's `rust-src` is.
@@ -11,10 +11,9 @@
 //!   it, or a person trying a changed library (its own `DIGEST` is then the one used);
 //! - `share/blaze/library/` in a directory above the program (Nix's `$out`);
 //! - blaze's own copy, `~/.blaze/library/<digest>/library`, which [`fetch`] makes once from
-//!   the checkout this blaze was built in while it has the same library, else downloaded:
-//!   unpatched, as the nightly's `rust-src`, whose bytes it then is (its sha256 is in
-//!   `UPSTREAM`); patched, as the release's `library-<digest>.tar.xz`. It is checked file by
-//!   file against the digest whichever way it came.
+//!   the checkout this blaze was built in while it has the same library, else downloaded as
+//!   the release's `library-<digest>.tar.xz`. It is checked file by file against the digest
+//!   whichever way it came.
 //!
 //! It is never read in a checkout: what blaze stores of a crate whose data names the checkout
 //! built is that checkout's alone, and the standard library's is everyone's.
@@ -42,12 +41,6 @@ const BUILT_WITH: &str = include_str!("../../../../../library/DIGEST");
 /// What the library this blaze was built with is a copy of (`library/UPSTREAM`).
 const UPSTREAM: &str = include_str!("../../../../../library/UPSTREAM");
 
-/// blaze's changes to it (`library/PATCHES.md`).
-const PATCHES: &str = include_str!("../../../../../library/PATCHES.md");
-
-/// Where the nightly's `rust-src` has the library in its archive.
-const INSIDE: &str = "rust-src-nightly/rust-src/lib/rustlib/src/rust/library";
-
 /// Where the assets of the releases are.
 const RELEASES: &str = "https://github.com/indexable-inc/blaze/releases/download";
 
@@ -65,19 +58,6 @@ pub fn digest() -> &'static str {
 /// The commit of rust-lang/rust the library is a copy of, from `UPSTREAM`.
 pub fn upstream_commit(upstream: &str) -> Option<&str> {
     upstream.lines().find_map(|it| it.strip_prefix("commit ")).map(str::trim)
-}
-
-/// Where the nightly's `rust-src` is and its sha256, from `UPSTREAM`.
-fn rust_src(upstream: &str) -> Option<(&str, &str)> {
-    let line = upstream.lines().find_map(|it| it.strip_prefix("rust-src "))?;
-    line.trim().split_once(' ')
-}
-
-/// Whether `patches`, a `PATCHES.md`, names a file of the library changed (`` `library/<path>` ``,
-/// as `harness/library.py check` reads it).
-fn patched(patches: &str) -> bool {
-    let mut quoted = patches.split('`').skip(1).step_by(2);
-    quoted.any(|it| it.starts_with("library/") && !it.contains(char::is_whitespace))
 }
 
 /// A library blaze can read: its directory, its digest and the commit it is a copy of.
@@ -206,11 +186,10 @@ pub fn fetch() -> Result<Library, String> {
         .filter(|it| !it.is_empty())
         .map_or_else(|| format!("v{}", env!("CARGO_PKG_VERSION")), str::to_owned);
     let given = std::env::var("BLAZE_LIBRARY_FROM").ok().filter(|it| !it.is_empty());
-    let from = match (Library::ours_at(checkout()), given, rust_src(UPSTREAM)) {
-        (Some(_), _, _) => checkout().to_string_lossy().into_owned(),
-        (None, Some(given), _) => given,
-        (None, None, Some((url, _))) if !patched(PATCHES) => url.to_owned(),
-        (None, None, _) => format!("{RELEASES}/{tag}"),
+    let from = match (Library::ours_at(checkout()), given) {
+        (Some(_), _) => checkout().to_string_lossy().into_owned(),
+        (None, Some(given)) => given,
+        (None, None) => format!("{RELEASES}/{tag}"),
     };
     let fetched = fetch_into(&dir, &from, digest()).map_err(|e| {
         format!(
@@ -230,9 +209,8 @@ pub fn archive_name(digest: &str) -> String {
 }
 
 /// The library with digest `want` in `dir`, unless it is there: copied from `from` when that
-/// is a library, unpacked from the nightly's `rust-src` when `from` is `UPSTREAM`'s (and its
-/// bytes have `UPSTREAM`'s sha256), else unpacked from its archive in `from` (a release's
-/// address, or a directory that has it).
+/// is a library, else unpacked from its archive in `from` (a release's address, or a directory
+/// that has it).
 fn fetch_into(dir: &Path, from: &str, want: &str) -> anyhow::Result<Library> {
     let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
         anyhow::bail!("{} has no place for it", dir.display());
@@ -257,16 +235,6 @@ fn fetch_into(dir: &Path, from: &str, want: &str) -> anyhow::Result<Library> {
     let unpacked = (|| {
         match &copied {
             Some(from) => copy_all(from, &library)?,
-            None if rust_src(UPSTREAM).is_some_and(|(url, _)| url == from) => {
-                let (url, sha256) = rust_src(UPSTREAM).unwrap_or_default();
-                let (address, file) = url.rsplit_once('/').unwrap_or((url, url));
-                let bytes = download(address, file)?;
-                let got = crate::content::hex(&Sha256::digest(&bytes));
-                if got != sha256 {
-                    anyhow::bail!("{url} has the sha256 {got}, and UPSTREAM says {sha256}");
-                }
-                unpack_rust_src(&bytes, &library)?;
-            }
             None => {
                 let bytes = download(from, &archive)?;
                 let mut xz = lzma_rust2::XzReader::new(std::io::Cursor::new(&bytes), false);
@@ -291,30 +259,6 @@ fn fetch_into(dir: &Path, from: &str, want: &str) -> anyhow::Result<Library> {
     eprintln!("Made blaze's standard library {short} in {:.1?}.", start.elapsed());
     let fetched = Library::at(dir.to_owned()).filter(|it| it.digest == want);
     fetched.ok_or_else(|| anyhow::anyhow!("{archive} has no DIGEST that says {want}"))
-}
-
-/// The library in `bytes`, the nightly's `rust-src`, written to `to` with blaze's own files
-/// of it (`UPSTREAM`, `PATCHES.md`): an unpatched library is these bytes.
-fn unpack_rust_src(bytes: &[u8], to: &Path) -> anyhow::Result<()> {
-    let mut xz = lzma_rust2::XzReader::new(std::io::Cursor::new(bytes), false);
-    let mut archive = tar::Archive::new(&mut xz);
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?.into_owned();
-        let Ok(inside) = path.strip_prefix(INSIDE) else { continue };
-        if inside.as_os_str().is_empty() {
-            continue;
-        }
-        let there = to.join(inside);
-        if let Some(parent) = there.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        entry.unpack(&there)?;
-    }
-    std::fs::create_dir_all(to)?;
-    std::fs::write(to.join("UPSTREAM"), UPSTREAM)?;
-    std::fs::write(to.join("PATCHES.md"), PATCHES)?;
-    Ok(())
 }
 
 /// Copies the files, links and directories under `from` to `to`, which is made.
@@ -461,16 +405,6 @@ mod tests {
             "library/ changed: `python3 harness/library.py digest '{{}}'` writes its DIGEST"
         );
         assert_eq!(upstream_commit(UPSTREAM), Some(super::super::own::commit()), "the nightly's");
-    }
-
-    #[test]
-    fn an_unpatched_library_is_the_nightlys_rust_src() {
-        assert!(!patched(PATCHES), "library/PATCHES.md names no file yet");
-        assert!(patched("- `library/core/src/num/mod.rs`: why\n"));
-        assert!(!patched("naming each file in backticks as `library/<path> x`\n"));
-        let (url, sha256) = rust_src(UPSTREAM).unwrap();
-        assert!(url.ends_with("/rust-src-nightly.tar.xz"), "{url}");
-        assert_eq!(sha256.len(), 64);
     }
 
     #[test]

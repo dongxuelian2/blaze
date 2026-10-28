@@ -22,7 +22,7 @@ A bump, in order (each step names itself when it fails, and stops there):
     apply; a conflict stops the bump and names the files);
  4. merges the new nightly's standard library into library/ (`library.py merge`): upstream's
     changes since library/UPSTREAM's nightly, applied three-way, so blaze's own changes to it
-    (library/PATCHES.md) are kept; a conflict stops the bump and names the files. It runs when
+    are kept; a conflict stops the bump and names the files. It runs when
     the pin is already the nightly's too, so a bump branch made before library/ catches up;
  5. moves the pins written down elsewhere: the old toolchain name, rustc version line and
     commit in install.sh and vendor/proc-macro-srv (RUSTC_VERSION_STRING, the manifest's

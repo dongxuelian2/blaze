@@ -11,12 +11,12 @@
     library.py merge '{"date": "2026-11-02"}'
         library/ moves to that nightly's standard library as a merge: upstream's changes from
         UPSTREAM's nightly to the new one are applied three-way to library/, so blaze's own
-        changes (PATCHES.md) are kept. A conflict stops with the files, which have conflict
-        markers then, and nothing else changed is undone. An empty date is harness/toolchain's.
+        changes are kept. A conflict stops with the files, which have conflict markers then,
+        and nothing else changed is undone. An empty date is harness/toolchain's.
     library.py check '{}'
-        library/ is UPSTREAM's nightly's standard library but for the files PATCHES.md names and
-        blaze's own (UPSTREAM, PATCHES.md, DIGEST): every other file is upstream's, byte for byte
-        and mode for mode, and none is missing or added; and DIGEST is library/'s digest.
+        DIGEST is library/'s digest, and UPSTREAM names a nightly whose rust-src has its sha256;
+        lists the files that differ from that nightly's standard library (blaze's changes,
+        which are not refused: the diff is their record).
     library.py digest '{}'
         writes library/DIGEST, the digest blaze knows the library by (the store's key of the
         standard library; `toolchain/library.rs` computes the same): after any change to library/.
@@ -222,23 +222,17 @@ def ours_kept():
 PATCHES_TEXT = """# blaze's changes to the standard library
 
 library/ is the Rust project's standard library at the commit of blaze's nightly
-(UPSTREAM), unchanged but for the changes listed here. `python3 harness/library.py check '{}'`
-holds it to that: a file that differs from upstream and is not named below fails it.
+(UPSTREAM) with blaze's changes. blaze changes it freely: the record of what changed is the
+diff against upstream, which `python3 harness/library.py check '{}'` lists. This file is a
+log of the notable changes and why, not a list a change has to be entered in.
 
-To change the standard library: edit it under library/, commit, and add an entry below in the
-same commit, naming each file it changes, what it changes and why. The daily bump moves
-library/ to the next nightly as a merge (`harness/library.py merge`), so the change is kept;
-a conflict stops the bump with an issue (docs/toolchain.md, "The daily bump").
+To change the standard library: edit it under library/, run
+`python3 harness/library.py digest '{}'`, commit. The daily bump moves library/ to the next
+nightly as a merge (`harness/library.py merge`), so the change is kept; a conflict stops the
+bump with an issue (docs/toolchain.md, "The daily bump").
 
 None yet.
 """
-
-
-def patched():
-    """The files PATCHES.md names, as `library/<path>` in backticks."""
-    if not os.path.isfile(PATCHES):
-        return set()
-    return set(re.findall(r"`library/([^`\s]+)`", open(PATCHES).read()))
 
 
 def do_import(args):
@@ -297,7 +291,7 @@ def do_merge(args):
                 open(kept, "wb").write(patch)
                 sys.exit(
                     f"library.py: upstream's changes from {old.nightly} to {new.nightly} conflict with blaze's "
-                    f"changes to the standard library (library/PATCHES.md) in: {', '.join(conflicted) or '(see below)'}. "
+                    f"changes to the standard library in: {', '.join(conflicted) or '(see below)'}. "
                     f"Resolve the conflict markers there, `git add` them and finish the bump; upstream's whole "
                     f"change is {kept}. git apply said:\n{applied.stderr.decode()[-3000:]}")
     open(UPSTREAM, "w").write(new.text())
@@ -307,7 +301,10 @@ def do_merge(args):
 
 def do_check(args):
     upstream = Upstream.read()
-    named = patched()
+    recorded = open(DIGEST).read().strip() if os.path.isfile(DIGEST) else "(none)"
+    if (digest := digest_of(LIBRARY)) != recorded:
+        sys.exit(f"library.py: library/DIGEST says {recorded} and library/'s digest is {digest}: "
+                 f"`library.py digest '{{}}'` writes it")
     with tempfile.TemporaryDirectory(prefix="blaze-library-") as work:
         unpack(upstream, os.path.join(work, "library"))
         theirs = files(os.path.join(work, "library"))
@@ -315,19 +312,11 @@ def do_check(args):
     differ = sorted(path for path in theirs.keys() & ours.keys() if theirs[path] != ours[path])
     missing = sorted(theirs.keys() - ours.keys())
     added = sorted(ours.keys() - theirs.keys())
-    unnamed = [p for p in differ + missing + added if p not in named]
     for kind, paths in (("differs from upstream", differ), ("is missing", missing), ("is not upstream's", added)):
         for path in paths:
-            print(f"library/{path} {kind}{'' if path in named else ' and PATCHES.md does not name it'}")
-    recorded = open(DIGEST).read().strip() if os.path.isfile(DIGEST) else "(none)"
-    if (digest := digest_of(LIBRARY)) != recorded:
-        sys.exit(f"library.py: library/DIGEST says {recorded} and library/'s digest is {digest}: "
-                 f"`library.py digest '{{}}'` writes it")
-    if unnamed:
-        sys.exit(f"library.py: library/ is not {upstream.nightly}'s standard library: {len(unnamed)} file(s) "
-                 f"changed that PATCHES.md does not name")
-    print(f"library/ is {upstream.nightly}'s standard library ({len(theirs)} files), "
-          f"{len(named & (set(differ) | set(missing) | set(added)))} patched")
+            print(f"library/{path} {kind}")
+    print(f"library/ is {upstream.nightly}'s standard library ({len(theirs)} files) with "
+          f"{len(differ) + len(missing) + len(added)} changed by blaze")
 
 
 def do_digest(args):

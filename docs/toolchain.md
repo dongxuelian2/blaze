@@ -129,11 +129,9 @@ of blaze is told where it is in `BLAZE_LIBRARY`, the first of:
 - `share/blaze/library` above the program (the Nix package installs it there);
 - `~/.blaze/library/<digest>/library`, which blaze makes once, beside the toolchain's
   download: copied from the checkout it was built in when that has the same library, else
-  downloaded. Unpatched (`library/PATCHES.md` names no file), the library is the nightly's
-  `rust-src` byte for byte, so that is what is downloaded (6.0 MB, its sha256 in `UPSTREAM`);
-  patched, it is the release's `library-<digest>.tar.xz` (6.0 MB, `harness/library.py
-  archive` writes it), which the release workflow has to attach before the first patch
-  lands. Whichever way it came it is checked against the digest file by file. A checkout's own
+  downloaded as the release's `library-<digest>.tar.xz` (6.0 MB, `harness/library.py
+  archive` writes it, the release workflow attaches it), or from where `BLAZE_LIBRARY_FROM`
+  names. Whichever way it came it is checked against the digest file by file. A checkout's own
   `library/` is never read in place: what the store keeps of a crate whose data names the
   checkout being built is that checkout's alone, and the standard library's is everyone's.
 
@@ -141,15 +139,16 @@ of blaze is told where it is in `BLAZE_LIBRARY`, the first of:
   read from the nightly's channel manifest (`harness/library.py import` wrote it).
 - It is not a member of blaze's workspace: no fmt, clippy or test of blaze's reads it, and
   `.gitattributes` keeps upstream's bytes.
-- `python3 harness/library.py check '{}'` holds it to upstream: every file is the nightly's,
-  byte for byte, but those `library/PATCHES.md` names.
+- `python3 harness/library.py check '{}'` checks that `DIGEST` is the library's and lists
+  the files that differ from `UPSTREAM`'s nightly. blaze changes its library freely: that
+  diff is the record of what blaze changed, not a ledger a change has to be entered in.
 - The daily bump moves it with the pin as a merge (`harness/library.py merge`): upstream's
   changes from the old nightly to the new one are applied three-way, so blaze's own changes
   are kept. A conflict stops the bump, names the files and opens the bump's issue.
 
-To change the standard library, edit it under `library/` and say what and why in
-`library/PATCHES.md` in the same commit, naming each file in backticks as
-`` `library/<path>` ``, and run `python3 harness/library.py digest '{}'` (the test
+To change the standard library, edit it under `library/` (a notable change can say what and
+why in `library/PATCHES.md`, a log, not a list of files) and run
+`python3 harness/library.py digest '{}'` (the test
 `the_library_is_the_one_its_digest_says` fails on a stale `DIGEST`). The next build copies
 the changed library into `~/.blaze/library/<new digest>`, and the store keys what it compiles
 of it apart from the old. There are no changes yet: with `library/` unpatched, blaze must
