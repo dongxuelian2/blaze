@@ -509,7 +509,10 @@ def install(home, archive, readme, rustup):
     if readme:
         script = subprocess.run(["curl", "-fsSL", "https://ix.dev/blaze"], capture_output=True, text=True, check=True).stdout
     else:
-        env["BLAZE_ARCHIVE"] = os.path.abspath(archive)
+        # Under a name of its own, as a user may save it: install.sh reads the folder in it.
+        renamed = os.path.join(home, "blaze.tar.gz")
+        shutil.copy(archive, renamed)
+        env["BLAZE_ARCHIVE"] = renamed
         with open(os.path.join(HERE, "..", "install.sh")) as f:
             script = f.read()
     done = subprocess.run(["sh"], input=script, env=env, capture_output=True, text=True)
