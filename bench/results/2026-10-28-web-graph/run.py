@@ -41,6 +41,7 @@ class Input:
     live_s: int = 10
     width: int = 1600
     height: int = 1000
+    probe: int = 0
 
 
 def parse_input(raw: str) -> Input:
@@ -156,6 +157,8 @@ def one_run(p, inp: Input, port: int, arm: str, run: int) -> dict:
         result["live"] = page.evaluate(f"bench.live({inp.live_s * 1000})")
         result["live_moving"] = page.evaluate(f"bench.liveMoving({inp.live_s * 1000})")
         result["sim_only"] = page.evaluate("bench.simOnly(10)")
+        if inp.probe:
+            result["probe_live"] = page.evaluate(f"bench.probeLive({inp.probe})")
         result["memory_end"] = page.evaluate("bench.memory()")
         result["rss_end_mb"] = chromium_rss_mb(pid) if pid > 0 else None
     except Exception as e:  # noqa: BLE001 - the failure is the result of this run

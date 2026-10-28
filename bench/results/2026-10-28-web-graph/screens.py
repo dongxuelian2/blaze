@@ -141,6 +141,8 @@ def main() -> None:
         b = p.chromium.launch(executable_path=inp.chromium, headless=True,
                               args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"])
         page = b.new_page(viewport={"width": inp.width, "height": inp.height})
+        # A screenshot waits for a frame, and SwiftShader takes seconds over a large graph.
+        page.set_default_timeout(180_000)
         page.on("console", lambda m: log.append(f"{m.type}: {m.text}"[:400]))
         page.on("pageerror", lambda e: log.append(f"pageerror: {e}"[:2000]))
         page.add_init_script("document.addEventListener('securitypolicyviolation', e => console.error('CSP ' + e.violatedDirective + ' ' + e.blockedURI + ' ' + e.sourceFile + ':' + e.lineNumber))")

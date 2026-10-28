@@ -243,6 +243,25 @@ async function cosmosArm(d, stage) {
       graph.setPointSizes(sizes);
       graph.render(undefined, 0);
     },
+    // applyLive's parts timed one by one, after draining the GPU: whether its cost is waiting
+    // for the frame in flight or work of its own.
+    probeLive(idx, flip) {
+      const gl = canvas.getContext("webgl2");
+      const t0 = now();
+      gl.finish();
+      const t1 = now();
+      for (const i of idx) {
+        if (flip) colors.set([1, 0.95, 0.7, 1], 4 * i); else colors.set(d.colors.subarray(4 * i, 4 * i + 4), 4 * i);
+        sizes[i] = flip ? d.sizes[i] * 1.8 : d.sizes[i];
+      }
+      graph.setPointColors(colors);
+      const t2 = now();
+      graph.setPointSizes(sizes);
+      const t3 = now();
+      graph.render(undefined, 0);
+      const t4 = now();
+      return { finishMs: t1 - t0, colorsMs: t2 - t1, sizesMs: t3 - t2, renderMs: t4 - t3 };
+    },
   };
 }
 
@@ -375,6 +394,18 @@ window.bench = {
     arm.reset();
     await sleep(200);
     return r;
+  },
+  async probeLive(count) {
+    if (!arm.probeLive) return null;
+    const r = rng(7);
+    const out = [];
+    for (let k = 0; k < count; k++) {
+      await frame();
+      const idx = new Uint32Array(1000);
+      for (let j = 0; j < 1000; j++) idx[j] = Math.floor(r() * data.s.n);
+      out.push(arm.probeLive(idx, k % 2 === 0));
+    }
+    return out;
   },
   memory() {
     const m = performance.memory;

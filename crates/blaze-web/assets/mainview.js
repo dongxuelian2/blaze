@@ -233,15 +233,18 @@ export class MainView {
     this.applyHighlight();
   }
 
+  // Without a selection, a spread under way greys out all but what it has reached; once it is
+  // over, its rings give way to a selection.
   applyHighlight() {
     const sel = this.previewSel ?? this.selection;
     const links = new Set(this.spreadLinks);
     if (sel?.links) for (const e of sel.links) links.add(e);
+    const spreading = this.spreadTimers.length > 0 && this.outlined.size > 0;
     this.graph.setConfigPartial({
-      highlightedPointIndices: sel?.nodes ? Array.from(sel.nodes) : undefined,
+      highlightedPointIndices: sel?.nodes ? Array.from(sel.nodes) : spreading ? Array.from(this.outlined) : undefined,
       highlightedLinkIndices: links.size ? Array.from(links) : undefined,
       focusedPointIndex: sel?.focus ?? undefined,
-      outlinedPointIndices: this.outlined.size ? Array.from(this.outlined) : undefined,
+      outlinedPointIndices: this.outlined.size && (spreading || !sel) ? Array.from(this.outlined) : undefined,
     });
   }
 
