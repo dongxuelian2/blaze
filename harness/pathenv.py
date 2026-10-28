@@ -4,16 +4,18 @@
 Usage: pathenv.py [INPUT], one JSON object inline, in a file, or '-' for stdin:
     {"blaze": "/path/to/blaze", "work": "/new/scratch/directory"}
 
-Identical PATH, an empty prefix and restoring PATH must reuse the loaded worker. A script
-that selects a tool through PATH must see each command's tool and environment. Each result
-is compared with a fresh reference Cargo build. Worker PIDs, directory identities, loads,
-reloads, output and wall times are recorded in work/results.json; times do not gate.
+Identical PATH, an empty prefix and restoring PATH must reuse the loaded worker. Scripts,
+native proc macros and an external assembler use each command's tool and environment,
+including an unset PATH. Each result is compared with a fresh reference Cargo build.
+Worker PIDs, directory identities, loads, reloads, output and wall times are recorded in
+work/results.json; times do not gate. The external assembler fixture is Linux x86-64.
 """
 import dataclasses
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -73,6 +75,36 @@ fn main() {
     "src/main.rs": 'fn main() { println!("{}:{}", env!("SELECTED_TOOL"), env!("SCRIPT_VALUE")); }\n',
 }
 
+NATIVE = {
+    "Cargo.toml": '[package]\nname = "path-env-native"\nversion = "0.0.0"\nedition = "2021"\n'
+                  '[dependencies]\npath-env-macros = { path = "macros" }\n[workspace]\n',
+    "src/main.rs": 'fn main() { println!("{}", path_env_macros::selected!()); }\n',
+    "macros/Cargo.toml": '[package]\nname = "path-env-macros"\nversion = "0.0.0"\nedition = "2021"\n'
+                         '[lib]\nproc-macro = true\n',
+    "macros/src/lib.rs": '''use proc_macro::TokenStream;
+#[proc_macro]
+pub fn selected(_: TokenStream) -> TokenStream {
+    let selected = if std::env::var_os("PATH").is_none() {
+        "unset".to_owned()
+    } else {
+        let tool = std::process::Command::new("blaze-path-tool").output().unwrap();
+        assert!(tool.status.success());
+        String::from_utf8(tool.stdout).unwrap().trim().to_owned()
+    };
+    format!("{selected:?}").parse().unwrap()
+}
+''',
+}
+
+ASSEMBLY = dict(PLAIN, **{
+    "src/main.rs": '''fn main() {
+    let value: usize;
+    unsafe { core::arch::asm!("mov {value}, 17", value = out(reg) value); }
+    println!("{value}");
+}
+''',
+})
+
 
 def write_workspace(root, files):
     for name, text in files.items():
@@ -97,12 +129,22 @@ def main(config):
     empty = work / "empty"
     empty.mkdir()
     tools = []
+    assembler_log = work / "assembler.log"
+    assembly_case = sys.platform.startswith("linux") and os.uname().machine in ("x86_64", "amd64")
+    clang = shutil.which("clang")
+    if assembly_case and clang is None:
+        sys.exit("pathenv.py: the external assembler fixture requires clang")
     for name in ("first", "second"):
         directory = work / name
         directory.mkdir()
         tool = directory / "blaze-path-tool"
         tool.write_text(f"#!/bin/sh\nprintf '%s\\n' '{name}'\n")
         tool.chmod(0o755)
+        if clang:
+            wrapper = directory / "clang"
+            wrapper.write_text(f"#!/bin/sh\nprintf '%s\\n' '{name}' >> {shlex.quote(str(assembler_log))}\n"
+                               f"exec {shlex.quote(clang)} \"$@\"\n")
+            wrapper.chmod(0o755)
         tools.append(directory)
 
     def check(label, held, detail=""):
@@ -118,24 +160,46 @@ def main(config):
     def sequence(name, files, steps):
         ws, home = work / name, work / (name + "-home")
         write_workspace(ws, files)
+        if name == "native":
+            # The macro sandbox can read its workspace; keep the selected tools inside it.
+            for directory in tools:
+                shutil.copytree(directory, ws / directory.name)
         base = base_env(str(home))
         base.update(BLAZE_SPARE="0", BLAZE_MEMORY_MAX="off", BLAZE_IDLE_SECS="3600")
         base["PATH"] = str(blaze.parent) + os.pathsep + base["PATH"]
         base.pop("SCRIPT_VALUE", None)
-        cargo = shutil.which("cargo", path=base["PATH"])
-        if cargo is None:
-            raise RuntimeError("the pinned Cargo reference is not on PATH")
+        if name == "native":
+            base["BLAZE_PROC_MACRO_WASM"] = "0"
+        if name == "assembler":
+            base["BLAZE_ASSEMBLER"] = "cc"
+        rustup = shutil.which("rustup", path=base["PATH"])
+        if rustup is None:
+            raise RuntimeError("rustup is needed to locate the pinned reference tools")
+        def reference_tool(name):
+            found, _ = run([rustup, "which", "--toolchain", TOOLCHAIN, name], ws, base)
+            if found.returncode:
+                raise RuntimeError(found.stderr)
+            return found.stdout.strip()
+        cargo, rustc = reference_tool("cargo"), reference_tool("rustc")
         first_workers = None
         first_loads = None
         try:
             for label, prefix, value in steps:
                 env = dict(base)
-                env["PATH"] = os.pathsep.join([str(path) for path in prefix] + [base["PATH"]])
+                if prefix is None:
+                    env.pop("PATH", None)
+                else:
+                    if name == "native":
+                        prefix = [ws / path.name if path in tools else path for path in prefix]
+                    env["PATH"] = os.pathsep.join([str(path) for path in prefix] + [base["PATH"]])
                 if value is not None:
                     env["SCRIPT_VALUE"] = value
-                reference = dict(env, CARGO_TARGET_DIR=str(work / "reference" / name / label))
-                expected, _ = run([cargo, f"+{TOOLCHAIN}", "run", "--offline", "-q"], ws, reference)
+                # Calling Cargo directly preserves an absent PATH; the rustup proxy adds
+                # its toolchain's bin directory, which would change the reference input.
+                reference = dict(env, RUSTC=rustc, CARGO_TARGET_DIR=str(work / "reference" / name / label))
+                expected, _ = run([cargo, "run", "--offline", "-q"], ws, reference)
                 check(f"{name}/{label}: reference builds", expected.returncode == 0, expected.stderr[-500:] if expected.returncode else "")
+                assembled_before = assembler_log.read_text().splitlines() if assembler_log.exists() else []
                 ran, elapsed = run([str(blaze), "run", "-q"], ws, env)
                 (work / f"{name}-{label}.stdout").write_text(ran.stdout)
                 (work / f"{name}-{label}.stderr").write_text(ran.stderr)
@@ -151,6 +215,15 @@ def main(config):
                               status=status.stdout, exit=ran.returncode, stdout=ran.stdout,
                               reference_exit=expected.returncode, reference_stdout=expected.stdout)
                 results.append(record)
+                if name == "assembler":
+                    assembled = assembler_log.read_text().splitlines() if assembler_log.exists() else []
+                    used = assembled[len(assembled_before):]
+                    record["assembler_runs"] = used
+                    if label == "identical":
+                        check(f"{name}/{label}: compiled state reused", not used, repr(used))
+                    else:
+                        selected = "second" if label == "different-tool" else "first"
+                        check(f"{name}/{label}: current tool assembled", bool(used) and set(used) == {selected}, repr(used))
                 print(json.dumps(record), flush=True)
                 check(f"{name}/{label}: agrees with Cargo", expected.returncode == 0 and
                       (ran.returncode, ran.stdout) == (expected.returncode, expected.stdout),
@@ -179,6 +252,17 @@ def main(config):
             ("unset-value", [tools[1]], None),
             ("restored", [tools[0]], "alpha"),
         ])
+        sequence("native", NATIVE, [
+            ("initial", [tools[0]], None), ("identical", [tools[0]], None),
+            ("empty-prefix", [empty, tools[0]], None),
+            ("different-tool", [tools[1]], None), ("unset-path", None, None),
+            ("restored", [tools[0]], None),
+        ])
+        if assembly_case:
+            sequence("assembler", ASSEMBLY, [
+                ("initial", [tools[0]], None), ("identical", [tools[0]], None),
+                ("different-tool", [tools[1]], None), ("restored", [tools[0]], None),
+            ])
     finally:
         (work / "results.json").write_text(json.dumps(dict(results=results, failures=failed), indent=2) + "\n")
     print("PASS" if not failed else "FAIL: " + "; ".join(failed), flush=True)
