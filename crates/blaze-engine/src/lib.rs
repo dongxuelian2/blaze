@@ -9416,6 +9416,9 @@ fn run_holding(
                             continue;
                         }
                         builds.settle(&mut db, &mut programs)?;
+                        for (_, link) in links.drain() {
+                            _ = link.join();
+                        }
                     }
                     // A checkout that is not what it was loaded from is loaded again before
                     // anything is built of it. The builds under way and the ones already
