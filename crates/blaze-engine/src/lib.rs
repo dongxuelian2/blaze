@@ -3181,8 +3181,9 @@ fn workspace_at(
         };
         anyhow::bail!(
             "{named} has no source of the standard library, which blaze compiles from: \
-             `blaze toolchain` downloads blaze's, digest {}",
-            cargo::toolchain::library::digest()
+             `blaze toolchain` downloads blaze's, digest {} ({})",
+            cargo::toolchain::library::digest(),
+            cargo::toolchain::library::why_not()
         );
     }
     let mut debug = plan::Whole {

@@ -113,6 +113,19 @@ static FOUND: OnceLock<Result<Library, String>> = OnceLock::new();
 /// What [`fetch`] downloaded, when the library was not found before.
 static FETCHED: OnceLock<Library> = OnceLock::new();
 
+/// Why [`publish`] could not make blaze's copy from the checkout.
+static NOT_MADE: OnceLock<String> = OnceLock::new();
+
+/// Why there is no library here, for an error that says so: what finding it and making it
+/// said.
+pub fn why_not() -> String {
+    let found = found().err().unwrap_or_default();
+    match NOT_MADE.get() {
+        Some(made) => format!("{found}; {made}"),
+        None => found,
+    }
+}
+
 /// Where the library is, found with nothing fetched (or fetched by this process); `Err` says
 /// why there is none.
 pub fn found() -> Result<&'static Library, String> {
@@ -414,7 +427,16 @@ pub fn publish() {
     if std::env::var_os(VAR).is_some_and(|it| !it.is_empty()) {
         return;
     }
-    let copied = || Library::ours_at(checkout()).and_then(|_| fetch().ok());
+    let copied = || {
+        Library::ours_at(checkout())?;
+        match fetch() {
+            Ok(made) => Some(made),
+            Err(why) => {
+                _ = NOT_MADE.set(why);
+                None
+            }
+        }
+    };
     let dir = found().ok().cloned().or_else(copied);
     let dir = dir.map(|it| it.dir.into_os_string()).unwrap_or_default();
     // SAFETY: before any thread is started.
