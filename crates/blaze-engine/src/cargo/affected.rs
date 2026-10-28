@@ -44,7 +44,9 @@ pub(crate) fn verifying() -> bool {
 }
 
 /// Has the daemon write [`plan::REACH`] at its builds of the programs of tests of `state`
-/// while only the tests an edit reached are run, and stop when every test is.
+/// while only the tests an edit reached are run, and stop when every test is. The one there
+/// stays: a build without the ask takes it away, so one left is of the program as it is, and
+/// a command after `BLAZE_TESTS=all` uses it with no build for it.
 pub(crate) fn ask(state: &State) {
     let on = on();
     for program in state.programs.iter().filter(|it| it.test) {
@@ -54,10 +56,7 @@ pub(crate) fn ask(state: &State) {
             true if wanted.is_file() => {}
             // A fresh target has no directory for the program until it is built.
             true => _ = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&wanted, "")),
-            false => {
-                _ = std::fs::remove_file(&wanted);
-                _ = std::fs::remove_file(dir.join(plan::REACH));
-            }
+            false => _ = std::fs::remove_file(&wanted),
         }
     }
 }
@@ -101,8 +100,10 @@ pub(crate) struct Planned {
     pub(crate) name: String,
     /// Whether its end is a function of its code alone.
     pub(crate) hermetic: bool,
-    /// What it reaches that its code does not decide, all kinds.
-    pub(crate) reasons: Vec<plan::Reason>,
+    /// What makes it not hermetic and what it reaches that does not, each a JSON list of
+    /// [`plan::Reason`]s as [`plan::REACH`] has it.
+    pub(crate) reasons: String,
+    pub(crate) nondeterministic: String,
     pub(crate) cached: Cached,
 }
 
@@ -236,12 +237,18 @@ pub(crate) fn pick(
                 why: rest.to_owned(),
                 chain: Vec::new(),
             };
-            let reasons = vec![reason];
-            let name = name.to_owned();
-            planned.push(Planned { name, hermetic: false, reasons, cached: Cached::Never });
+            let reasons = serde_json::to_string(&[reason]).unwrap_or_else(|_| "[]".to_owned());
+            planned.push(Planned {
+                name: name.to_owned(),
+                hermetic: false,
+                reasons,
+                nondeterministic: "[]".to_owned(),
+                cached: Cached::Never,
+            });
             continue;
         }
-        let reasons: Vec<plan::Reason> = serde_json::from_str(rest).unwrap_or_default();
+        let (blocking, others) = rest.split_once('\t').unwrap_or((rest, "[]"));
+        let (reasons, nondeterministic) = (blocking.to_owned(), others.to_owned());
         let (mark, hash) = match hash.as_bytes().first() {
             Some(b'~' | b'!') => (&hash[..1], &hash[1..]),
             _ => ("", hash),
@@ -250,8 +257,14 @@ pub(crate) fn pick(
         let sandboxed = sandbox.ok().filter(|_| !outside.contains(name));
         let reads = mark == "~" && sandboxed.is_some();
         if !hermetic && !reads {
-            let first = reasons.iter().find(|it| it.blocks());
-            let why = first.map_or_else(
+            // Said only under `--verbose`: the reasons of thousands of tests are megabytes.
+            let first = match asked.flags.verbose {
+                true => serde_json::from_str::<Vec<plan::Reason>>(blocking)
+                    .ok()
+                    .and_then(|it| it.into_iter().next()),
+                false => None,
+            };
+            let why = first.as_ref().map_or_else(
                 || "it reaches what its code does not decide".to_owned(),
                 |it| it.why.clone(),
             );
@@ -261,7 +274,8 @@ pub(crate) fn pick(
             names.push(name.to_owned());
             always.push(Always { name: name.to_owned(), why, path });
             let name = name.to_owned();
-            planned.push(Planned { name, hermetic, reasons, cached: Cached::Never });
+            let cached = Cached::Never;
+            planned.push(Planned { name, hermetic, reasons, nondeterministic, cached });
             continue;
         }
         let identity = match (reads, sandboxed) {
@@ -275,7 +289,13 @@ pub(crate) fn pick(
             Found::Passed { .. } => Cached::Hit,
             _ => Cached::Miss,
         };
-        planned.push(Planned { name: name.to_owned(), hermetic, reasons, cached: kept });
+        planned.push(Planned {
+            name: name.to_owned(),
+            hermetic,
+            reasons,
+            nondeterministic,
+            cached: kept,
+        });
         match found {
             Found::Passed { from } => {
                 cached.insert(name.to_owned(), from);

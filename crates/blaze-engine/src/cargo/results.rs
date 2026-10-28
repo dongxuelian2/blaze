@@ -298,12 +298,34 @@ pub(crate) fn programs(paths: &[&Path]) -> String {
     let mut known = KNOWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut hash = Sha256::new();
     for path in paths {
-        let digest =
-            known.entry(path.to_path_buf()).or_insert_with(|| sandboxed::digest(path)).clone();
+        let digest = known.entry(path.to_path_buf()).or_insert_with(|| {
+            blaze_store::compiles_against(RESULTS);
+            program(blaze_store::Store::global_or(super::daemon::store().as_deref()), path)
+        });
+        let digest = digest.clone();
         field(&mut hash, path.as_os_str().as_encoded_bytes());
         field(&mut hash, digest.as_bytes());
     }
     format!("-{}", hex(&hash.finalize()[..16]))
+}
+
+/// What [`sandboxed::digest`] says of the program at `path`, kept in the store under what
+/// [`sandboxed::stat`] says of it: a program of hundreds of megabytes is read once a build
+/// links it again, not by every command.
+fn program(store: Option<&blaze_store::Store>, path: &Path) -> String {
+    let Some(store) = store else { return sandboxed::digest(path) };
+    let stat = sandboxed::stat(path);
+    let named = path.as_os_str().as_encoded_bytes();
+    let key = keyed(&[RESULTS.as_bytes(), b"program", named, stat.as_bytes()]);
+    if let Some(kept) = store.get(&key) {
+        return String::from_utf8_lossy(&kept).into_owned();
+    }
+    let digest = sandboxed::digest(path);
+    // A program written again while it was read is not what the digest says it is.
+    if stat != "-" && sandboxed::stat(path) == stat {
+        store.insert(&key, digest.as_bytes());
+    }
+    digest
 }
 
 fn pure(first: &Key) -> Key {
@@ -368,6 +390,24 @@ mod tests {
         _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_program_is_read_again_once_it_is_written_again() {
+        let dir = scratch("program");
+        let results = results(&dir.join("store"));
+        let exe = dir.join("exe");
+        std::fs::write(&exe, "one").unwrap();
+        let one = program(Some(results.store), &exe);
+        assert_eq!(one, sandboxed::digest(&exe));
+        results.seal();
+        assert_eq!(program(Some(results.store), &exe), one);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&exe, "two").unwrap();
+        let two = program(Some(results.store), &exe);
+        assert_ne!(two, one);
+        assert_eq!(two, sandboxed::digest(&exe));
+        _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
