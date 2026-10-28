@@ -1,46 +1,74 @@
-# A long differential fuzz run every night: generated programs built by rustc and by blaze
-# under both producers, outputs compared. The seed is the run number, so every night covers
-# new programs and a failing night can be repeated with `fuzz.py run --seed N`.
+# PROBE (lane sansio, never merged): bench docs/driver.md steps 2-3 against main on hosted
+# runners while ix VMs cannot place a build. Arms: base = main, scripts = build scripts and proc
+# macros as graph nodes, names = that and name resolution as graph nodes.
 name: fuzz
 on:
-  schedule:
-    - cron: "0 3 * * *"
   workflow_dispatch:
-    inputs:
-      seed:
-        description: seed (defaults to the run number)
-        required: false
-      rounds:
-        description: programs to generate
-        default: "200"
-
-env:
-  CARGO_INCREMENTAL: 0
 
 jobs:
-  fuzz:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: base
+            sha: ea68cacf1fce21b6b45e161c3cc284e37b4a84db
+          - arm: scripts
+            sha: 988e0802e354e581625e3a2e738f911391821218
+          - arm: names
+            sha: ad53eee9aa5cb9b964ce621d9f2afc89cd675c33
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.sha }}
+      - uses: ./.github/actions/toolchain
+        with:
+          llvm: build
+      - run: nix develop --command cargo build -p blaze-engine --release --locked
+      - run: nix develop --command python3 .github/scripts/build_release.py --server-beside target/release/blaze-engine
+      - name: Pack
+        working-directory: target/release
+        run: |
+          server=$([ -f blaze-proc-macro-srv ] && echo blaze-proc-macro-srv || true)
+          tar -cf blaze.tar blaze-engine blaze blaze-rustc $server
+      - uses: actions/upload-artifact@v7
+        with:
+          name: blaze-${{ matrix.arm }}
+          path: target/release/blaze.tar
+          retention-days: 3
+
+  bench:
+    needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/toolchain
         with:
-          llvm: build
-      - uses: Swatinem/rust-cache@v2
-      - run: nix develop --command cargo build -p blaze-engine --release --features llvm --locked
-      - name: Fuzz
-        working-directory: harness
+          ref: ea68cacf1fce21b6b45e161c3cc284e37b4a84db
+      - uses: ./.github/actions/toolchain
+      - uses: actions/download-artifact@v7
+        with:
+          path: arms
+      - name: Unpack
+        run: for arm in base scripts names; do mkdir -p "bin/$arm" && tar -xf "arms/blaze-$arm/blaze.tar" -C "bin/$arm"; done
+      # The arms alternate, two rounds, so a drift of the runner falls on all of them.
+      - name: bench.py ripgrep and cargo
         run: |
-          export BLAZE_BIN="$GITHUB_WORKSPACE/target/release/blaze-engine"
-          python3 fuzz/fuzz.py run --seed "${{ inputs.seed || github.run_number }}" \
-            --rounds "${{ inputs.rounds || '200' }}" --backends cranelift,llvm \
-            --out "$RUNNER_TEMP/fuzz-out" || status=$?
-          python3 fuzz/fuzz.py report "$RUNNER_TEMP/fuzz-out" | tee -a "$GITHUB_STEP_SUMMARY"
-          exit "${status:-0}"
+          mkdir -p results
+          export BLAZE_PROJECTS="$RUNNER_TEMP/projects" RUST_BACKTRACE=0
+          for round in 1 2; do
+            for arm in base scripts names; do
+              BLAZE_BIN="$PWD/bin/$arm/blaze-engine" BLAZE_BENCH_COMMIT="$arm" BLAZE_BENCH_MACHINE="gh ubuntu-24.04" \
+                python3 harness/bench.py ripgrep cargo --runs 3 --out "results/$arm-$round.json" --work "$RUNNER_TEMP/work-$arm-$round" \
+                > "results/$arm-$round.log" 2>&1 || echo "$arm round $round: exit $?" | tee -a results/failed.txt
+              tail -30 "results/$arm-$round.log"
+            done
+          done
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: fuzz-${{ github.run_number }}
-          path: |
-            ${{ runner.temp }}/fuzz-out
-            harness/fuzz/found
+          name: results
+          path: results
+          retention-days: 7
