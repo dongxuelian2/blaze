@@ -336,15 +336,14 @@ impl ProcMacroExpander for Kept {
         {
             // Opaque native hosts can read inherited variables as well as crate variables.
             // Only their digest enters the store; keep the request snapshot out of artifacts.
-            let env = ide_db::base_db::ProcessEnv::try_get(db)
-                .map(|it| it.vars(db).clone())
-                .unwrap_or_else(|| {
-                    std::env::vars_os()
-                        .filter_map(|(key, value)| {
-                            Some((key.into_string().ok()?, value.into_string().ok()?))
-                        })
-                        .collect()
-                });
+            let env: Env = match ide_db::base_db::ProcessEnv::try_get(db) {
+                Some(process) => process.vars(db).clone(),
+                None => std::env::vars_os()
+                    .filter_map(|(key, value)| {
+                        Some((key.into_string().ok()?, value.into_string().ok()?))
+                    })
+                    .collect(),
+            };
             let mut vars: Vec<_> = env.iter().collect();
             vars.sort_unstable();
             let mut hash = Sha256::new();

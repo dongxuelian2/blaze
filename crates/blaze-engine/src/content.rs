@@ -20,18 +20,27 @@ use triomphe::Arc;
 type Hash = [u8; 32];
 
 fn native_macro_environment(db: &RootDatabase, krate: Crate) -> Option<String> {
-    let inherited = krate.data(db).dependencies.iter().any(|dep| {
-        dep.crate_id.data(db).target_kind.is_proc_macro()
-            && hir_expand::proc_macro::ProcMacros::get_for_crate(db, dep.crate_id)
-                .and_then(|it| it.macros())
-                .is_some_and(|macros| macros.iter().any(|it| it.expander.inherits_process_env()))
-    });
+    let mut inherited = false;
+    for dep in &krate.data(db).dependencies {
+        if !dep.crate_id.data(db).target_kind.is_proc_macro() {
+            continue;
+        }
+        let Some(loaded) = hir_expand::proc_macro::ProcMacros::get_for_crate(db, dep.crate_id)
+        else {
+            continue;
+        };
+        let Some(macros) = loaded.macros() else { continue };
+        for proc_macro in macros.iter() {
+            inherited |= proc_macro.expander.inherits_process_env();
+        }
+    }
     if !inherited {
         return None;
     }
-    let env = base_db::ProcessEnv::try_get(db)
-        .map(|it| it.vars(db).clone())
-        .unwrap_or_else(crate::process::own);
+    let env: base_db::Env = match base_db::ProcessEnv::try_get(db) {
+        Some(process) => process.vars(db).clone(),
+        None => crate::process::own(),
+    };
     Some(crate::process::fingerprint(&env))
 }
 
