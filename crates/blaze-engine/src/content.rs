@@ -11,13 +11,29 @@ use std::{
 use hir_ty_codegen::{CARGO_HOME, ContentId, LibrarySources, moved};
 use ide_db::{
     RootDatabase,
-    base_db::{Crate, SourceDatabase as _},
+    base_db::{self, Crate, SourceDatabase as _},
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use sha2::{Digest, Sha256};
 use triomphe::Arc;
 
 type Hash = [u8; 32];
+
+fn native_macro_environment(db: &RootDatabase, krate: Crate) -> Option<String> {
+    let inherited = krate.data(db).dependencies.iter().any(|dep| {
+        dep.crate_id.data(db).target_kind.is_proc_macro()
+            && hir_expand::proc_macro::ProcMacros::get_for_crate(db, dep.crate_id)
+                .and_then(|it| it.macros())
+                .is_some_and(|macros| macros.iter().any(|it| it.expander.inherits_process_env()))
+    });
+    if !inherited {
+        return None;
+    }
+    let env = base_db::ProcessEnv::try_get(db)
+        .map(|it| it.vars(db).clone())
+        .unwrap_or_else(crate::process::own);
+    Some(crate::process::fingerprint(&env))
+}
 
 /// The crates of one build. An edit makes another crate of the one it is in and of every
 /// crate of the checkout that depends on it.
@@ -180,6 +196,14 @@ impl Contents {
         field(env.as_bytes());
         // What `env!` and `option_env!` in it read of the process the build is for.
         field(format!("{:?}", process_reads(krate)).as_bytes());
+        if let Some(env) = native_macro_environment(db, krate) {
+            field(b"proc-macro host environment");
+            field(env.as_bytes());
+        }
+        if let Some(path) = hir_ty_codegen::assembler_path(db) {
+            field(b"external assembler PATH");
+            field(format!("{path:?}").as_bytes());
+        }
         // What `include_bytes!` and `include_str!` in it read that no source root has, as it
         // was read: known once the crate is listed, which asking its reads had it be.
         let mut read: Vec<(Written, String, Hash)> = db
@@ -267,6 +291,14 @@ impl Contents {
         cfgs.sort_unstable();
         field(cfgs.join("\n").as_bytes());
         field(format!("{:?}", process_reads(krate)).as_bytes());
+        if let Some(env) = native_macro_environment(db, krate) {
+            field(b"proc-macro host environment");
+            field(env.as_bytes());
+        }
+        if let Some(path) = hir_ty_codegen::assembler_path(db) {
+            field(b"external assembler PATH");
+            field(format!("{path:?}").as_bytes());
+        }
         let mut dependencies: Vec<_> = krate.data(db).dependencies.iter().collect();
         dependencies.sort_unstable_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
         for dependency in dependencies {

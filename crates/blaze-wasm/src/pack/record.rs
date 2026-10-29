@@ -34,6 +34,10 @@ struct Recorder {
 }
 
 impl ProcMacroExpander for Recorder {
+    fn inherits_process_env(&self) -> bool {
+        self.inner.inherits_process_env()
+    }
+
     fn requires_session(&self) -> bool {
         self.inner.requires_session()
     }
