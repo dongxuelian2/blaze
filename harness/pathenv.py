@@ -255,6 +255,9 @@ def main(config):
                         cached = label in ("restored", "empty-prefix")
                         check(f"{name}/{label}: current tool assembled", (bool(used) or cached) and
                               all(tool == selected for tool in used), repr(used))
+                        if label in ("empty-prefix", "different-tool"):
+                            check(f"{name}/{label}: library uses the current assembler", len(used) > 1,
+                                  f"{len(used)} assembler invocations, including the program's one block")
                 if name == "linker":
                     linked = linker_log.read_text().splitlines() if linker_log.exists() else []
                     used = linked[len(linked_before):]

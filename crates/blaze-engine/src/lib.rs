@@ -4653,9 +4653,15 @@ fn std_unit(
     std_unit_at(db, table, args, listed, args.out.with_extension("std.o"))
 }
 
-/// The [`UnitStamps`] of each standard library's unit this process wrote, by its path.
-static UNITS_WRITTEN: std::sync::LazyLock<Mutex<FxHashMap<PathBuf, UnitStamps>>> =
+/// The files and code producer of each standard library's unit this process wrote.
+static UNITS_WRITTEN: std::sync::LazyLock<Mutex<FxHashMap<PathBuf, WrittenUnit>>> =
     std::sync::LazyLock::new(Default::default);
+
+#[derive(Clone)]
+struct WrittenUnit {
+    stamps: UnitStamps,
+    assembler: Option<Option<String>>,
+}
 
 /// The length and write time of a standard library's unit and of its list of what it refused.
 type UnitStamps = [Option<(u64, SystemTime)>; 2];
@@ -4680,14 +4686,14 @@ fn std_unit_again(
     static AGAIN: Mutex<()> = Mutex::new(());
     let Some(unit) = &args.prebuilt else { return Ok(()) };
     let _again = lock(&AGAIN);
-    let Some(written) = lock(&UNITS_WRITTEN).get(unit).copied() else { return Ok(()) };
-    if written.iter().all(Option::is_some) && unit_stamps(unit) == written {
+    let Some(written) = lock(&UNITS_WRITTEN).get(unit).cloned() else { return Ok(()) };
+    if written.assembler == hir_ty_codegen::assembler_path(db)
+        && written.stamps.iter().all(Option::is_some)
+        && unit_stamps(unit) == written.stamps
+    {
         return Ok(());
     }
-    eprintln!(
-        "standard library: {} is not the file blaze wrote there, written again",
-        unit.display()
-    );
+    eprintln!("standard library: {} changed inputs or was replaced, written again", unit.display());
     // As the worker had it when it wrote the unit first, before it had a line to link with.
     let of_unit = Args { prebuilt: None, link_cmd: None, splice: None, ..args.clone() };
     match std_unit_at(db, table, &of_unit, listed, unit.with_extension("o"))? {
@@ -4746,6 +4752,10 @@ fn std_unit_at(
         hasher.update(bytes);
     };
     field(b"blaze standard library 5");
+    if let Some(path) = hir_ty_codegen::assembler_path(db) {
+        field(b"external assembler PATH");
+        field(format!("{path:?}").as_bytes());
+    }
     field(format!("{:?} {debug:?}", args.selection.target).as_bytes());
     // A file of one of its crates whose text is blaze's, not the toolchain's.
     if args.run_tool {
@@ -4780,7 +4790,13 @@ fn std_unit_at(
     let archive = object.with_extension("a");
     let refused = refused_exports_of(&object);
     let written = |path: &Path| {
-        lock(&UNITS_WRITTEN).insert(path.to_owned(), unit_stamps(path));
+        lock(&UNITS_WRITTEN).insert(
+            path.to_owned(),
+            WrittenUnit {
+                stamps: unit_stamps(path),
+                assembler: hir_ty_codegen::assembler_path(db),
+            },
+        );
     };
     let store = blaze_store::Store::global();
     let stored = || -> anyhow::Result<Option<PathBuf>> {
@@ -9495,11 +9511,23 @@ fn run_holding(
                         }
                         prepare_macro_sessions(&db);
                         if path_changed {
+                            let external_assembler = hir_ty_codegen::assembler_path(&db).is_some();
                             // A linker and the tools it invokes resolve through PATH too.
                             // Emit a whole object from the retained database's code: a
                             // zero-change splice would keep the previous linker's image.
                             for program in &mut programs {
-                                if program.args.exe.is_some() || program.args.link_cmd.is_some() {
+                                if external_assembler {
+                                    // The precompiled library is rebuilt in std_unit_again.
+                                    // Its old frozen code must not outlive that producer.
+                                    let patching = program.known.patching;
+                                    let used_by_rustc = program.known.used_by_rustc;
+                                    program.known = Rejections::default();
+                                    program.known.patching = patching;
+                                    program.known.used_by_rustc = used_by_rustc;
+                                    program.unbuilt.stale = true;
+                                } else if program.args.exe.is_some()
+                                    || program.args.link_cmd.is_some()
+                                {
                                     program.known.start_again();
                                     program.unbuilt.stale = true;
                                 }
