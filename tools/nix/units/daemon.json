@@ -729,6 +729,7 @@
      "blaze-manifest",
      "blaze-metadata",
      "blaze-new",
+     "blaze-profile",
      "blaze-protocol",
      "blaze-registry",
      "blaze-resolve",
@@ -827,6 +828,7 @@
      "blaze-lints",
      "blaze-live",
      "blaze-macro-wasm",
+     "blaze-profile",
      "blaze-protocol",
      "blaze-splice",
      "blaze-store",
@@ -873,6 +875,7 @@
      "toml",
      "toml_edit",
      "toolchain",
+     "tracing",
      "triomphe",
      "uds_windows",
      "url",
@@ -989,6 +992,7 @@
      "sha2 0.10.9",
      "span",
      "target-lexicon",
+     "tracing",
      "tt",
      "wasmtime"
     ],
@@ -1044,6 +1048,18 @@
      "toml_edit"
     ],
     "name": "blaze-new",
+    "version": "0.0.0"
+   },
+   {
+    "dependencies": [
+     "libc",
+     "rustc-hash 2.1.2",
+     "serde",
+     "serde_derive",
+     "serde_json",
+     "tracing"
+    ],
+    "name": "blaze-profile",
     "version": "0.0.0"
    },
    {
@@ -2593,6 +2609,7 @@
     "dependencies": [
      "base-db",
      "blaze-fuzz",
+     "blaze-profile",
      "blaze-store",
      "cfg",
      "cranelift-codegen",
@@ -6768,6 +6785,9 @@
     "blaze-new": {
      "path": "crates/blaze-new"
     },
+    "blaze-profile": {
+     "path": "crates/blaze-profile"
+    },
     "blaze-protocol": {
      "path": "crates/blaze-protocol"
     },
@@ -8296,6 +8316,23 @@
    "rust_version": "1.101",
    "source": {
     "dir": "crates/blaze-new",
+    "kind": "path"
+   },
+   "version": "0.0.0"
+  },
+  "blaze-profile@0.0.0": {
+   "authors": "blaze contributors",
+   "description": "Where the time of a blaze build goes: the steps of a build, and with BLAZE_PROFILE every process's per-thread timeline, the CPU time of each function compiled and of each pass",
+   "homepage": "",
+   "license": "MIT OR Apache-2.0",
+   "license_file": "",
+   "links": null,
+   "name": "blaze-profile",
+   "readme": "",
+   "repository": "https://github.com/indexable-inc/blaze",
+   "rust_version": "1.101",
+   "source": {
+    "dir": "crates/blaze-profile",
     "kind": "path"
    },
    "version": "0.0.0"
@@ -19306,6 +19343,10 @@
        "unit": "blaze-new@0.0.0 lib blaze_new build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -19684,6 +19725,10 @@
        "unit": "blaze-macro-wasm@0.0.0 lib blaze_macro_wasm build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -19850,6 +19895,10 @@
       {
        "name": "toolchain",
        "unit": "toolchain@0.0.0 lib toolchain build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
       },
       {
        "name": "triomphe",
@@ -19937,6 +19986,10 @@
        "unit": "blaze-macro-wasm@0.0.0 lib blaze_macro_wasm build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -20103,6 +20156,10 @@
       {
        "name": "toolchain",
        "unit": "toolchain@0.0.0 lib toolchain build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
       },
       {
        "name": "triomphe",
@@ -20190,6 +20247,10 @@
        "unit": "blaze-macro-wasm@0.0.0 lib blaze_macro_wasm build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -20356,6 +20417,10 @@
       {
        "name": "toolchain",
        "unit": "toolchain@0.0.0 lib toolchain build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
       },
       {
        "name": "triomphe",
@@ -20484,6 +20549,10 @@
        "unit": "blaze-macro-wasm@0.0.0 lib blaze_macro_wasm build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -20650,6 +20719,10 @@
       {
        "name": "toolchain",
        "unit": "toolchain@0.0.0 lib toolchain build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
       },
       {
        "name": "triomphe",
@@ -21066,6 +21139,10 @@
        "unit": "target-lexicon@0.13.5 lib target_lexicon build"
       },
       {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
+      },
+      {
        "name": "tt",
        "unit": "tt@0.0.0 lib tt build"
       },
@@ -21281,6 +21358,51 @@
      },
      "src": "src/lib.rs",
      "target": "blaze_new"
+    },
+    "blaze-profile@0.0.0 lib blaze_profile build": {
+     "crate_type": "lib",
+     "deps": [
+      {
+       "name": "libc",
+       "unit": "libc@0.2.186 lib libc build"
+      },
+      {
+       "name": "rustc_hash",
+       "unit": "rustc-hash@2.1.2 lib rustc_hash build"
+      },
+      {
+       "name": "serde",
+       "unit": "serde@1.0.228 lib serde build"
+      },
+      {
+       "name": "serde_derive",
+       "unit": "serde_derive@1.0.228 proc-macro serde_derive build host"
+      },
+      {
+       "name": "serde_json",
+       "unit": "serde_json@1.0.150 lib serde_json build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
+      }
+     ],
+     "edition": "2024",
+     "features": [],
+     "kind": "lib",
+     "mode": "build",
+     "pkg": "blaze-profile@0.0.0",
+     "profile": {
+      "codegen_units": null,
+      "debug_assertions": false,
+      "debuginfo": 0,
+      "name": "release",
+      "opt_level": "3",
+      "overflow_checks": false,
+      "panic": "unwind"
+     },
+     "src": "src/lib.rs",
+     "target": "blaze_profile"
     },
     "blaze-protocol@0.0.0 lib blaze_protocol build": {
      "crate_type": "lib",
@@ -26190,6 +26312,10 @@
       {
        "name": "base_db",
        "unit": "base-db@0.0.0 lib base_db build"
+      },
+      {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
       },
       {
        "name": "blaze_store",
@@ -40840,6 +40966,10 @@
        "unit": "blaze-new@0.0.0 lib blaze_new build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -41218,6 +41348,10 @@
        "unit": "blaze-macro-wasm@0.0.0 lib blaze_macro_wasm build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -41384,6 +41518,10 @@
       {
        "name": "toolchain",
        "unit": "toolchain@0.0.0 lib toolchain build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
       },
       {
        "name": "triomphe",
@@ -41471,6 +41609,10 @@
        "unit": "blaze-macro-wasm@0.0.0 lib blaze_macro_wasm build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -41637,6 +41779,10 @@
       {
        "name": "toolchain",
        "unit": "toolchain@0.0.0 lib toolchain build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
       },
       {
        "name": "triomphe",
@@ -41724,6 +41870,10 @@
        "unit": "blaze-macro-wasm@0.0.0 lib blaze_macro_wasm build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -41890,6 +42040,10 @@
       {
        "name": "toolchain",
        "unit": "toolchain@0.0.0 lib toolchain build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
       },
       {
        "name": "triomphe",
@@ -42018,6 +42172,10 @@
        "unit": "blaze-macro-wasm@0.0.0 lib blaze_macro_wasm build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -42184,6 +42342,10 @@
       {
        "name": "toolchain",
        "unit": "toolchain@0.0.0 lib toolchain build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
       },
       {
        "name": "triomphe",
@@ -42600,6 +42762,10 @@
        "unit": "target-lexicon@0.13.5 lib target_lexicon build"
       },
       {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
+      },
+      {
        "name": "tt",
        "unit": "tt@0.0.0 lib tt build"
       },
@@ -42815,6 +42981,51 @@
      },
      "src": "src/lib.rs",
      "target": "blaze_new"
+    },
+    "blaze-profile@0.0.0 lib blaze_profile build": {
+     "crate_type": "lib",
+     "deps": [
+      {
+       "name": "libc",
+       "unit": "libc@0.2.186 lib libc build"
+      },
+      {
+       "name": "rustc_hash",
+       "unit": "rustc-hash@2.1.2 lib rustc_hash build"
+      },
+      {
+       "name": "serde",
+       "unit": "serde@1.0.228 lib serde build"
+      },
+      {
+       "name": "serde_derive",
+       "unit": "serde_derive@1.0.228 proc-macro serde_derive build host"
+      },
+      {
+       "name": "serde_json",
+       "unit": "serde_json@1.0.150 lib serde_json build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
+      }
+     ],
+     "edition": "2024",
+     "features": [],
+     "kind": "lib",
+     "mode": "build",
+     "pkg": "blaze-profile@0.0.0",
+     "profile": {
+      "codegen_units": null,
+      "debug_assertions": false,
+      "debuginfo": 0,
+      "name": "release",
+      "opt_level": "3",
+      "overflow_checks": false,
+      "panic": "unwind"
+     },
+     "src": "src/lib.rs",
+     "target": "blaze_profile"
     },
     "blaze-protocol@0.0.0 lib blaze_protocol build": {
      "crate_type": "lib",
@@ -47624,6 +47835,10 @@
       {
        "name": "base_db",
        "unit": "base-db@0.0.0 lib base_db build"
+      },
+      {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
       },
       {
        "name": "blaze_store",
@@ -62247,6 +62462,10 @@
        "unit": "blaze-new@0.0.0 lib blaze_new build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -62625,6 +62844,10 @@
        "unit": "blaze-macro-wasm@0.0.0 lib blaze_macro_wasm build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -62791,6 +63014,10 @@
       {
        "name": "toolchain",
        "unit": "toolchain@0.0.0 lib toolchain build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
       },
       {
        "name": "triomphe",
@@ -62878,6 +63105,10 @@
        "unit": "blaze-macro-wasm@0.0.0 lib blaze_macro_wasm build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -63044,6 +63275,10 @@
       {
        "name": "toolchain",
        "unit": "toolchain@0.0.0 lib toolchain build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
       },
       {
        "name": "triomphe",
@@ -63131,6 +63366,10 @@
        "unit": "blaze-macro-wasm@0.0.0 lib blaze_macro_wasm build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -63297,6 +63536,10 @@
       {
        "name": "toolchain",
        "unit": "toolchain@0.0.0 lib toolchain build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
       },
       {
        "name": "triomphe",
@@ -63425,6 +63668,10 @@
        "unit": "blaze-macro-wasm@0.0.0 lib blaze_macro_wasm build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -63591,6 +63838,10 @@
       {
        "name": "toolchain",
        "unit": "toolchain@0.0.0 lib toolchain build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
       },
       {
        "name": "triomphe",
@@ -64007,6 +64258,10 @@
        "unit": "target-lexicon@0.13.5 lib target_lexicon build"
       },
       {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
+      },
+      {
        "name": "tt",
        "unit": "tt@0.0.0 lib tt build"
       },
@@ -64222,6 +64477,51 @@
      },
      "src": "src/lib.rs",
      "target": "blaze_new"
+    },
+    "blaze-profile@0.0.0 lib blaze_profile build": {
+     "crate_type": "lib",
+     "deps": [
+      {
+       "name": "libc",
+       "unit": "libc@0.2.186 lib libc build"
+      },
+      {
+       "name": "rustc_hash",
+       "unit": "rustc-hash@2.1.2 lib rustc_hash build"
+      },
+      {
+       "name": "serde",
+       "unit": "serde@1.0.228 lib serde build"
+      },
+      {
+       "name": "serde_derive",
+       "unit": "serde_derive@1.0.228 proc-macro serde_derive build host"
+      },
+      {
+       "name": "serde_json",
+       "unit": "serde_json@1.0.150 lib serde_json build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
+      }
+     ],
+     "edition": "2024",
+     "features": [],
+     "kind": "lib",
+     "mode": "build",
+     "pkg": "blaze-profile@0.0.0",
+     "profile": {
+      "codegen_units": null,
+      "debug_assertions": false,
+      "debuginfo": 0,
+      "name": "release",
+      "opt_level": "3",
+      "overflow_checks": false,
+      "panic": "unwind"
+     },
+     "src": "src/lib.rs",
+     "target": "blaze_profile"
     },
     "blaze-protocol@0.0.0 lib blaze_protocol build": {
      "crate_type": "lib",
@@ -69162,6 +69462,10 @@
       {
        "name": "base_db",
        "unit": "base-db@0.0.0 lib base_db build"
+      },
+      {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
       },
       {
        "name": "blaze_store",
@@ -83808,6 +84112,10 @@
        "unit": "blaze-new@0.0.0 lib blaze_new build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -84186,6 +84494,10 @@
        "unit": "blaze-macro-wasm@0.0.0 lib blaze_macro_wasm build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -84352,6 +84664,10 @@
       {
        "name": "toolchain",
        "unit": "toolchain@0.0.0 lib toolchain build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
       },
       {
        "name": "triomphe",
@@ -84439,6 +84755,10 @@
        "unit": "blaze-macro-wasm@0.0.0 lib blaze_macro_wasm build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -84605,6 +84925,10 @@
       {
        "name": "toolchain",
        "unit": "toolchain@0.0.0 lib toolchain build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
       },
       {
        "name": "triomphe",
@@ -84692,6 +85016,10 @@
        "unit": "blaze-macro-wasm@0.0.0 lib blaze_macro_wasm build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -84858,6 +85186,10 @@
       {
        "name": "toolchain",
        "unit": "toolchain@0.0.0 lib toolchain build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
       },
       {
        "name": "triomphe",
@@ -84986,6 +85318,10 @@
        "unit": "blaze-macro-wasm@0.0.0 lib blaze_macro_wasm build"
       },
       {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
+      },
+      {
        "name": "blaze_protocol",
        "unit": "blaze-protocol@0.0.0 lib blaze_protocol build"
       },
@@ -85152,6 +85488,10 @@
       {
        "name": "toolchain",
        "unit": "toolchain@0.0.0 lib toolchain build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
       },
       {
        "name": "triomphe",
@@ -85568,6 +85908,10 @@
        "unit": "target-lexicon@0.13.5 lib target_lexicon build"
       },
       {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
+      },
+      {
        "name": "tt",
        "unit": "tt@0.0.0 lib tt build"
       },
@@ -85783,6 +86127,51 @@
      },
      "src": "src/lib.rs",
      "target": "blaze_new"
+    },
+    "blaze-profile@0.0.0 lib blaze_profile build": {
+     "crate_type": "lib",
+     "deps": [
+      {
+       "name": "libc",
+       "unit": "libc@0.2.186 lib libc build"
+      },
+      {
+       "name": "rustc_hash",
+       "unit": "rustc-hash@2.1.2 lib rustc_hash build"
+      },
+      {
+       "name": "serde",
+       "unit": "serde@1.0.228 lib serde build"
+      },
+      {
+       "name": "serde_derive",
+       "unit": "serde_derive@1.0.228 proc-macro serde_derive build host"
+      },
+      {
+       "name": "serde_json",
+       "unit": "serde_json@1.0.150 lib serde_json build"
+      },
+      {
+       "name": "tracing",
+       "unit": "tracing@0.1.44 lib tracing build"
+      }
+     ],
+     "edition": "2024",
+     "features": [],
+     "kind": "lib",
+     "mode": "build",
+     "pkg": "blaze-profile@0.0.0",
+     "profile": {
+      "codegen_units": null,
+      "debug_assertions": false,
+      "debuginfo": 0,
+      "name": "release",
+      "opt_level": "3",
+      "overflow_checks": false,
+      "panic": "unwind"
+     },
+     "src": "src/lib.rs",
+     "target": "blaze_profile"
     },
     "blaze-protocol@0.0.0 lib blaze_protocol build": {
      "crate_type": "lib",
@@ -90623,6 +91012,10 @@
       {
        "name": "base_db",
        "unit": "base-db@0.0.0 lib base_db build"
+      },
+      {
+       "name": "blaze_profile",
+       "unit": "blaze-profile@0.0.0 lib blaze_profile build"
       },
       {
        "name": "blaze_store",

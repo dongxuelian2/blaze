@@ -330,8 +330,12 @@ pub fn libraries_of_with_env(
                 command.arg(MACROS_FLAG).arg(macro_paths_at(library, &paths)?);
             }
             command.arg(sysroot).arg(library);
-            let ran =
-                command.stdin(std::process::Stdio::null()).output().map_err(|it| it.to_string())?;
+            if let Some((var, dir)) = crate::trace::child_env() {
+                command.env(var, dir);
+            }
+            let ran = tracing::info_span!(target: "blaze", "make proc macro", subject = %name)
+                .in_scope(|| command.stdin(std::process::Stdio::null()).output())
+                .map_err(|it| it.to_string())?;
             if !ran.status.success() {
                 return Err(String::from_utf8_lossy(&ran.stderr).trim_end().to_owned());
             }
