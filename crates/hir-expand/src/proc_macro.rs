@@ -27,6 +27,11 @@ pub trait ProcMacroExpander: fmt::Debug + Send + Sync + RefUnwindSafe + Any {
         false
     }
 
+    /// The actual native host snapshot, when the implementation can provide it.
+    fn inherited_env(&self) -> Option<&[(std::ffi::OsString, std::ffi::OsString)]> {
+        None
+    }
+
     /// Whether calls share mutable state within one calling crate's compilation.
     fn requires_session(&self) -> bool {
         false

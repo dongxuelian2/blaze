@@ -83,7 +83,7 @@ the macro library's content, the macro's name and kind, its input with each span
 by its place in the call's table of spans, that table (each span's byte range within the
 item it is anchored to, and which of the call's anchors and hygiene contexts it has), the
 environment and the current directory the macro is given. Native hosts also key a digest
-of the current request environment, so a new command cannot reuse an earlier environment's
+of the host's startup environment, so a new command cannot reuse an earlier environment's
 expansion; the variables themselves are not stored. The output is kept with its spans
 written the same way, so tokens the macro made from a string at the call site come back
 anchored where the next call is. An expansion is not kept when it failed, when it asked

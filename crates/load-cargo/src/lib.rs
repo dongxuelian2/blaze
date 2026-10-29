@@ -901,7 +901,9 @@ pub fn load_proc_macro(
         }
         Ok(vec
             .into_iter()
-            .map(|expander| expander_to_proc_macro(expander, path, ignored_macros))
+            .map(|expander| {
+                expander_to_proc_macro(expander, path, ignored_macros, server.inherited_env())
+            })
             .collect())
     })();
     match res {
@@ -923,6 +925,7 @@ fn expander_to_proc_macro(
     expander: proc_macro_api::ProcMacro,
     dylib: &AbsPath,
     ignored_macros: &[Box<str>],
+    inherited_env: Option<proc_macro_api::InheritedEnv>,
 ) -> ProcMacro {
     let name = expander.name();
     let kind = match expander.kind() {
@@ -933,7 +936,12 @@ fn expander_to_proc_macro(
     let disabled = ignored_macros.iter().any(|replace| **replace == *name);
     let name = intern::Symbol::intern(name);
     ProcMacro {
-        expander: wrap::wrapped(sync::Arc::new(Expander(expander)), dylib, name.as_str(), kind),
+        expander: wrap::wrapped(
+            sync::Arc::new(Expander(expander, inherited_env)),
+            dylib,
+            name.as_str(),
+            kind,
+        ),
         name,
         kind,
         disabled,
@@ -941,11 +949,15 @@ fn expander_to_proc_macro(
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Expander(proc_macro_api::ProcMacro);
+struct Expander(proc_macro_api::ProcMacro, Option<proc_macro_api::InheritedEnv>);
 
 impl ProcMacroExpander for Expander {
     fn inherits_process_env(&self) -> bool {
         true
+    }
+
+    fn inherited_env(&self) -> Option<&[(std::ffi::OsString, std::ffi::OsString)]> {
+        self.1.as_ref().map(|it| it.variables())
     }
 
     fn expand(
