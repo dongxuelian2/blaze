@@ -290,9 +290,9 @@ fn as_rustc_spells(path: &str) -> String {
 /// what is stored names them where they were when the library was built, as every machine can.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LibrarySources {
-    /// The directory they are in here.
+    /// The directory they are in here: the library's, `library/`.
     pub here: String,
-    /// The directory they were built in, `/rustc/<commit>`.
+    /// The directory they were built in, `/rustc/<commit>/library`.
     pub built_in: String,
 }
 
@@ -3041,9 +3041,10 @@ fn root_code(db: &dyn HirDatabase, func: FunctionId, tier: bool) -> Result<Produ
     }
     let signature = FunctionSignature::of(db, func);
     let (abi, variadic) = (signature.abi, signature.is_varargs());
+    let body = body_for_abi(abi, Cow::Borrowed(body))?;
     let args = GenericArgs::new_from_slice(&[]).store();
     let checked = crate_checks_overflow(db, func.krate(db)).unwrap_or(false);
-    compile_as(db, env, Some(body), track_caller(db, func), checked, tier, |fx| {
+    compile_as(db, env, Some(&*body), track_caller(db, func), checked, tier, |fx| {
         fx.abi = abi;
         fx.variadic = variadic;
         fx.args = Some(args);
@@ -3512,7 +3513,23 @@ fn instance_body<'db>(
         | InstanceDef::FnPointerShim
         | InstanceDef::ReifyShim { .. } => unsupported!("the body of a shim"),
     };
-    body.map_err(|e| CodegenError::Frontend(format!("mir: {e:?}")))
+    let body = body.map_err(|e| CodegenError::Frontend(format!("mir: {e:?}")))?;
+    match instance.def {
+        InstanceDef::Fn(func) => body_for_abi(FunctionSignature::of(db, func).abi, body),
+        _ => Ok(body),
+    }
+}
+
+/// The body as its native entry point receives its arguments: the final tuple of an
+/// `extern "rust-call"` function arrives one field at a time, as rustc passes it.
+fn body_for_abi<'db>(
+    abi: ExternAbi,
+    mut body: Cow<'db, MirBody<'db>>,
+) -> Result<Cow<'db, MirBody<'db>>> {
+    if abi == ExternAbi::RustCall && !body.to_mut().spread_rust_call_tuple() {
+        unsupported!("the last parameter of a rust-call function is not a tuple");
+    }
+    Ok(body)
 }
 
 /// The types a body takes and returns, which is all its callers have to know about it. Asked
@@ -3688,6 +3705,14 @@ fn implemented_fn_method(
     let method = trait_ref.skip_binder().def_id.0.trait_items(db).method_by_name(name)?;
     let [fn_methods, _] = fn_trait_methods(lang_items);
     fn_methods.contains(&Some(method)).then_some(method)
+}
+
+/// The trait's declaration of `func`, a method of a trait impl; `func` itself otherwise.
+fn declared_method(db: &dyn HirDatabase, func: FunctionId) -> FunctionId {
+    let ItemContainerId::ImplId(impl_) = func.lookup(db).container else { return func };
+    let Some(trait_ref) = db.impl_trait(impl_) else { return func };
+    let name = &FunctionSignature::of(db, func).name;
+    trait_ref.skip_binder().def_id.0.trait_items(db).method_by_name(name).unwrap_or(func)
 }
 
 /// The instance that is the `poll` of the future `ty`, when that is one of an `async` block.
@@ -6186,11 +6211,23 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         };
         let waiting = std::collections::VecDeque::new();
         let mut ready = Ready { ahead: &ahead, work: work_to_do, progress, waiting };
+        /// Has no more roots come to the threads however the one beside them ends: unwound, as
+        /// a write to the database cancels it, too, or the threads wait for roots forever and
+        /// the scope that joins them never ends.
+        struct Closing<'a>(&'a std::sync::Mutex<Ahead>, &'a Waits);
+        impl Drop for Closing<'_> {
+            fn drop(&mut self) {
+                let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+                state.open = false;
+                state.stopped |= std::thread::panicking();
+                drop(state);
+                self.1.0.notify_all();
+                self.1.1.notify_all();
+            }
+        }
         self.symbols.in_parallel_beside(threads, &work, &mut || {
+            let _closing = Closing(&ahead, &waits);
             beside(self, Some(&mut ready));
-            ahead.lock().unwrap_or_else(|e| e.into_inner()).open = false;
-            work_to_do.notify_all();
-            progress.notify_all();
         });
         self.ahead = ahead.into_inner().unwrap_or_else(|e| e.into_inner()).seen;
     }
@@ -12233,7 +12270,8 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             return self.reified(fn_ty, false);
         }
         let sig = self.interner.instantiate_bound_regions_with_erased(fn_ty.fn_sig(self.interner));
-        let abi = self.fn_abi(sig.abi(), sig.output(), sig.inputs().iter().copied())?;
+        let inputs = Self::abi_inputs(sig.abi(), sig.inputs())?;
+        let abi = self.fn_abi(sig.abi(), sig.output(), inputs.iter().copied())?;
         let mut sig = self.signature(&abi.args, abi.ret);
         self.declare_variadic(callee, &mut sig)?;
         self.cg.callee(InstanceDef::Fn(callee), callee_args, self.env, &sig)
@@ -13317,6 +13355,53 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         Ok((pair, ty))
     }
 
+    /// Appends the addresses of the fields of the tuple at `tuple`, in declaration order: the
+    /// arguments a `rust-call` passes for it.
+    fn spread_tuple(
+        &mut self,
+        args: &mut Vec<(Value, Ty<'db>)>,
+        tuple: Value,
+        ty: Ty<'db>,
+    ) -> Result<()> {
+        let TyKind::Tuple(fields) = ty.kind() else {
+            unsupported!("the final argument of a rust-call is {ty:?}, not a tuple");
+        };
+        let layout = self.layout(ty)?;
+        args.extend(fields.iter().enumerate().map(|(i, field)| {
+            let offset = layout.fields.offset(i).bytes() as i64;
+            (self.builder.ins().iadd_imm(tuple, offset), field)
+        }));
+        Ok(())
+    }
+
+    /// Puts arguments received one by one back in the tuple of type `ty` a body uses them as.
+    fn pack_call_tuple(&mut self, ty: Ty<'db>, values: &[(Value, Ty<'db>)]) -> Result<Value> {
+        let layout = self.layout(ty)?;
+        let tuple = self.stack_slot(&layout);
+        for (i, &(src, field_ty)) in values.iter().enumerate() {
+            let size = self.layout(field_ty)?.size;
+            let offset = layout.fields.offset(i).bytes() as i64;
+            let field = self.builder.ins().iadd_imm(tuple, offset);
+            self.copy(field, src, size);
+        }
+        Ok(tuple)
+    }
+
+    /// The types a function with this signature is passed, one by one: the final tuple of a
+    /// `rust-call` signature is one argument per field, as its compiled body takes them.
+    fn abi_inputs<'a>(abi: ExternAbi, inputs: &'a [Ty<'db>]) -> Result<Cow<'a, [Ty<'db>]>> {
+        if abi != ExternAbi::RustCall {
+            return Ok(Cow::Borrowed(inputs));
+        }
+        let Some((&last, prefix)) = inputs.split_last() else {
+            unsupported!("a rust-call signature without its tuple");
+        };
+        let TyKind::Tuple(fields) = last.kind() else {
+            unsupported!("a rust-call signature whose last parameter is {last:?}, not a tuple");
+        };
+        Ok(Cow::Owned(prefix.iter().copied().chain(fields.iter()).collect()))
+    }
+
     /// `Fn::call`, `FnMut::call_mut` or `FnOnce::call_once`. For a call expression MIR passes
     /// the callee first and then the arguments one by one, not as a tuple.
     fn call_fn_trait(
@@ -13354,12 +13439,8 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 let mut values = vec![(thin, thin_ty)];
                 let tuple_ty = method_args.type_at(1);
                 match (&self.operands(rest)?[..], tuple_ty.kind()) {
-                    (&[(tuple, ty)], TyKind::Tuple(fields)) if ty == tuple_ty => {
-                        let layout = self.layout(tuple_ty)?;
-                        values.extend(fields.iter().enumerate().map(|(i, field)| {
-                            let offset = layout.fields.offset(i).bytes() as i64;
-                            (self.builder.ins().iadd_imm(tuple, offset), field)
-                        }));
+                    (&[(tuple, ty)], TyKind::Tuple(_)) if ty == tuple_ty => {
+                        self.spread_tuple(&mut values, tuple, ty)?;
                     }
                     (rest, _) => values.extend_from_slice(rest),
                 }
@@ -13372,18 +13453,11 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         // A call written as `f.call_mut(args)` does pass the tuple, which the callee takes
         // apart all the same.
         let tuple_ty = method_args.type_at(1);
-        if let (&[(tuple, ty)], TyKind::Tuple(fields)) = (&values[..], tuple_ty.kind())
+        if let (&[(tuple, ty)], TyKind::Tuple(_)) = (&values[..], tuple_ty.kind())
             && ty == tuple_ty
         {
-            let layout = self.layout(tuple_ty)?;
-            values = fields
-                .iter()
-                .enumerate()
-                .map(|(i, field)| {
-                    let offset = layout.fields.offset(i).bytes() as i64;
-                    (self.builder.ins().iadd_imm(tuple, offset), field)
-                })
-                .collect();
+            values.clear();
+            self.spread_tuple(&mut values, tuple, ty)?;
         }
         // The innermost reference to the callee and the address it is stored at.
         let mut by_ref = None;
@@ -13489,14 +13563,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             }
             // A type with its own `Fn` impls, which take the arguments as a tuple.
             TyKind::Adt(..) | TyKind::Ref(..) => {
-                let layout = self.layout(tuple_ty)?;
-                let tuple = self.stack_slot(&layout);
-                for (i, &(src, ty)) in values.iter().enumerate() {
-                    let size = self.layout(ty)?.size;
-                    let offset = layout.fields.offset(i).bytes() as i64;
-                    let field = self.builder.ins().iadd_imm(tuple, offset);
-                    self.copy(field, src, size);
-                }
+                let tuple = self.pack_call_tuple(tuple_ty, &values)?;
                 let [by_shared, by_mut, _] = fn_trait_methods(self.interner.lang_items())
                     .into_iter()
                     .find(|family| family.contains(&Some(method)))
@@ -13869,8 +13936,9 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             return self.vtable_fn_method(self_ty, once);
         }
         // A type with an impl of the trait, as `Box<dyn Fn()>` and `&mut dyn FnMut()` have:
-        // the slot is called with the arguments one by one and, for `call_once`, a pointer to
-        // the receiver, where the method takes them as a tuple and the receiver by value.
+        // the slot is called with the data pointer and the arguments one by one. The method is
+        // `rust-call` and so takes the arguments one by one as well, but `call_once` takes the
+        // receiver by value, which the slot has a pointer to.
         if fn_methods.contains(&Some(func)) {
             let Some(callee_args) = self.vtable_method_args(func, trait_ref) else {
                 unsupported!("generic `Fn`-trait method in a vtable");
@@ -13910,15 +13978,18 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             unsupported!("vtable method without a receiver");
         };
         // A by-value `self` reaches the method through a pointer and needs a shim, unless the
-        // method takes it through a pointer too.
+        // method takes it through a pointer too. rustc's shim (`ShimKind::VTable`) is of the
+        // trait's method, so one that tracks its caller only in the impl is given the place of
+        // the trait's declaration by the shim however `self` is passed.
         if receiver.as_ref() == self_ty {
             let layout = self.layout(self_ty)?;
             let mode = self.pass_mode(&layout, false)?;
-            if !matches!(mode, PassMode::Indirect) {
-                if track_caller(db, callee) {
-                    unsupported!("vtable method taking `self` by value that tracks its caller");
+            if !matches!(mode, PassMode::Indirect) || track_caller(db, callee) {
+                let mut sig = self.body_signature(body)?;
+                if track_caller(db, func) {
+                    sig.params.push(AbiParam::new(ptr()));
                 }
-                let sig = Self::by_pointer(&self.body_signature(body)?, mode);
+                let sig = Self::by_pointer(&sig, mode);
                 return self.cg.callee(
                     InstanceDef::VtableShim(callee),
                     callee_args,
@@ -13999,7 +14070,8 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         // receiver is an argument like the rest: where it goes moves where they do.
         let abi = if receiver { ExternAbi::Rust } else { fn_sig.abi() };
         let pointer = receiver.then(|| Ty::new_imm_ptr(self.interner, Ty::new_unit(self.interner)));
-        let inputs = pointer.into_iter().chain(fn_sig.inputs().iter().copied());
+        let inputs = Self::abi_inputs(abi, fn_sig.inputs())?;
+        let inputs = pointer.into_iter().chain(inputs.iter().copied());
         let mut abi = self.fn_abi(abi, fn_sig.output(), inputs)?;
         let sig = self.signature(&abi.args, abi.ret);
         if receiver {
@@ -14023,8 +14095,10 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             _ => self.stack_slot(&dst_layout),
         };
         let receiver = if receiver { incoming.next() } else { None };
+        let abi = if receiver.is_some() { ExternAbi::Rust } else { fn_sig.abi() };
+        let inputs = Self::abi_inputs(abi, fn_sig.inputs())?;
         let mut values = Vec::new();
-        for (&ty, mode) in fn_sig.inputs().iter().zip(modes) {
+        for (&ty, mode) in inputs.iter().zip(modes) {
             let layout = self.layout(ty)?;
             let addr = match mode {
                 PassMode::OnStack { padded: true, .. } => {
@@ -14038,6 +14112,14 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             };
             self.receive(mode, &mut incoming, addr, &layout);
             values.push((addr, ty));
+        }
+        // What the callee is called with has the tuple, which the call spreads again.
+        if abi == ExternAbi::RustCall {
+            let (&tuple, prefix) =
+                fn_sig.inputs().split_last().expect("abi_inputs checked the tuple");
+            let addr = self.pack_call_tuple(tuple, &values[prefix.len()..])?;
+            values.truncate(prefix.len());
+            values.push((addr, tuple));
         }
         match ty.kind() {
             TyKind::FnDef(def, generic_args) => match def.0 {
@@ -14248,35 +14330,44 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             return self.spread_shim(func, args, method);
         }
         let body = self.body_types(InstanceDef::Fn(func), args)?;
-        let sig = self.body_signature(body)?;
+        let mut sig = self.body_signature(body)?;
         let Some(receiver) = body.params.first() else {
             unsupported!("vtable method without a receiver");
         };
         let layout = self.layout(receiver.as_ref())?;
         let mode = self.pass_mode(&layout, false)?;
-        self.call_by_pointer(func, args, &sig, mode, &layout)
+        // The shim is handed the caller's place when the trait's declaration tracks it, and
+        // passes it on; otherwise a method that tracks it is given the declaration's place, the
+        // span of rustc's shim.
+        let declared = declared_method(self.cg.db, func);
+        let handed = track_caller(self.cg.db, declared);
+        if handed {
+            sig.params.push(AbiParam::new(ptr()));
+        }
+        let placed = (!handed && track_caller(self.cg.db, func)).then_some(declared);
+        self.call_by_pointer(func, args, &sig, mode, &layout, placed)
     }
 
     /// What the vtable slot for an `Fn`-trait method written for a type, whose body is
     /// `body`, is called with: the data pointer of the object, then the arguments one by one,
-    /// as every call through an `Fn`-trait vtable passes them. The method takes them as the
-    /// tuple this also gives.
+    /// as every call through an `Fn`-trait vtable passes them. The method is `rust-call`, so
+    /// its body takes the arguments one by one too, after the receiver; this also gives the
+    /// tuple they make, which a call of the method is handed.
     fn spread_shim_abi(&self, body: &BodyTypes) -> Result<(Ty<'db>, FnAbi)> {
-        let [_, tuple] = &body.params[..] else {
-            unsupported!("an `Fn`-trait method that takes other than a receiver and a tuple");
+        let Some((_, fields)) = body.params.split_first() else {
+            unsupported!("an `Fn`-trait method without a receiver");
         };
-        let tuple = tuple.as_ref();
-        let TyKind::Tuple(fields) = tuple.kind() else {
-            unsupported!("an `Fn`-trait method that takes {tuple:?}, not a tuple");
-        };
+        let fields: Vec<Ty<'db>> = fields.iter().map(|it| it.as_ref()).collect();
+        let tuple = Ty::new_tup(self.interner, &fields);
         let thin = Ty::new_imm_ptr(self.interner, Ty::new_unit(self.interner));
-        let inputs = std::iter::once(thin).chain(fields.iter());
+        let inputs = std::iter::once(thin).chain(fields);
         Ok((tuple, self.fn_abi(ExternAbi::Rust, body.returned.as_ref(), inputs)?))
     }
 
     /// The body of a `VtableShim` for `func`, the `Fn`-trait method `method` written for a
-    /// type: puts the arguments it is handed one by one back in the tuple `func` takes, and
-    /// hands `func` the receiver, which for `call_once` it has a pointer to.
+    /// type: puts the arguments it is handed one by one in the tuple a call of `func` is
+    /// written with, which the call spreads again, and hands `func` the receiver, which for
+    /// `call_once` it has a pointer to.
     fn spread_shim(
         &mut self,
         func: FunctionId,
@@ -14344,7 +14435,8 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
     }
 
     /// The body of a shim that is handed a pointer to the receiver of `callee`, which takes
-    /// it by value as `mode` says.
+    /// it by value as `mode` says, and, with `placed`, the place that function is declared
+    /// as its caller's.
     fn call_by_pointer(
         &mut self,
         callee: FunctionId,
@@ -14352,6 +14444,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         sig: &Signature,
         mode: PassMode,
         layout: &Layout,
+        placed: Option<FunctionId>,
     ) -> Result<()> {
         self.builder.func.signature = Self::by_pointer(sig, mode);
         let entry = self.builder.create_block();
@@ -14362,11 +14455,20 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         let Some(&receiver) = params.get(sret as usize) else {
             unsupported!("shim for a receiver that is not passed");
         };
-        let callee = self.cg.callee(InstanceDef::Fn(callee), callee_args, self.env, sig)?;
+        let mut callee_sig = sig.clone();
+        if placed.is_some() {
+            callee_sig.params.push(AbiParam::new(ptr()));
+        }
+        let callee = self.cg.callee(InstanceDef::Fn(callee), callee_args, self.env, &callee_sig)?;
         let callee = self.cg.declare_func_in_func(callee, self.builder.func);
         let mut values = Vec::new();
         self.pass(mode, receiver, layout, &mut values);
         params.splice(sret as usize..sret as usize + 1, values);
+        if let Some(declared) = placed {
+            let location = self.cg.declaration(declared);
+            let location = self.cg.declare_data_in_func(location, self.builder.func);
+            params.push(self.builder.ins().symbol_value(ptr(), location));
+        }
         let results = self.invoke(callee, &params);
         self.builder.ins().return_(&results);
         Ok(())
@@ -14755,6 +14857,19 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             }
             Callee::Instance(..) => ExternAbi::Rust,
             Callee::Pointer(_, abi, _) => abi,
+        };
+        // The final tuple of a `rust-call` is passed one field at a time.
+        let spread;
+        let args = if abi == ExternAbi::RustCall {
+            let Some((&(tuple, ty), fixed)) = args.split_last() else {
+                unsupported!("a rust-call without its tuple");
+            };
+            let mut values = fixed.to_vec();
+            self.spread_tuple(&mut values, tuple, ty)?;
+            spread = values;
+            &spread[..]
+        } else {
+            args
         };
         let FnAbi { ret: ret_mode, args: arg_modes } =
             self.fn_abi(abi, dst_ty, args.iter().map(|&(_, ty)| ty))?;
@@ -15600,26 +15715,48 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 // factors the other way round, which decides which of two NaNs comes out; a
                 // vector of one lane is the scalar's `fmadd`, in order.
                 let swapped = self.cg.target.arch == Arch::Aarch64 && count > 1;
-                // x86-64's LLVM makes `simd_relaxed_fma` (`llvm.fmuladd`) of a CPU without FMA
-                // a multiply and then an add (`mulps`, `addps`), rounded twice.
-                let unfused = name == "simd_relaxed_fma" && self.cg.target.arch == Arch::X86_64;
-                let lanes: Vec<Value> = (0..count)
-                    .map(|i| {
-                        let offset = (i * lane.ty.bytes() as u64) as i32;
+                // Whole vectors of 16 bytes, or one of 8, so that LLVM's SLP vectorizer, which
+                // joins lanes of scalar fmas into a vector fma with the factors in their order
+                // and so picks the other NaN, has nothing to join.
+                let bytes = count * u64::from(lane.ty.bytes());
+                let chunk = match bytes {
+                    8 => 8,
+                    _ if bytes % 16 == 0 => 16,
+                    _ => 0,
+                };
+                if swapped && matches!(lane.ty, types::F32 | types::F64) && chunk != 0 {
+                    let vector = lane.ty.by((chunk / u64::from(lane.ty.bytes())) as u32);
+                    let vector = vector.expect("8 or 16 bytes of lanes");
+                    for at in (0..bytes).step_by(chunk as usize) {
+                        let at = at as i32;
                         let [x, y, z] =
-                            [a, b, c].map(|v| self.builder.ins().load(lane.ty, MEM, v, offset));
-                        if unfused {
-                            let product = self.builder.ins().fmul(x, y);
-                            self.builder.ins().fadd(product, z)
-                        } else if swapped {
-                            self.builder.ins().fma(y, x, z)
-                        } else {
-                            self.builder.ins().fma(x, y, z)
-                        }
-                    })
-                    .collect();
-                for (i, value) in lanes.into_iter().enumerate() {
-                    self.builder.ins().store(MEM, value, dst, i as i32 * lane.ty.bytes() as i32);
+                            [a, b, c].map(|v| self.builder.ins().load(vector, MEM, v, at));
+                        let value = self.builder.ins().fma(y, x, z);
+                        self.builder.ins().store(MEM, value, dst, at);
+                    }
+                } else {
+                    // x86-64's LLVM makes `simd_relaxed_fma` (`llvm.fmuladd`) of a CPU without
+                    // FMA a multiply and then an add (`mulps`, `addps`), rounded twice.
+                    let unfused = name == "simd_relaxed_fma" && self.cg.target.arch == Arch::X86_64;
+                    let lanes: Vec<Value> = (0..count)
+                        .map(|i| {
+                            let offset = (i * lane.ty.bytes() as u64) as i32;
+                            let [x, y, z] =
+                                [a, b, c].map(|v| self.builder.ins().load(lane.ty, MEM, v, offset));
+                            if unfused {
+                                let product = self.builder.ins().fmul(x, y);
+                                self.builder.ins().fadd(product, z)
+                            } else if swapped {
+                                self.builder.ins().fma(y, x, z)
+                            } else {
+                                self.builder.ins().fma(x, y, z)
+                            }
+                        })
+                        .collect();
+                    for (i, value) in lanes.into_iter().enumerate() {
+                        let offset = i as i32 * lane.ty.bytes() as i32;
+                        self.builder.ins().store(MEM, value, dst, offset);
+                    }
                 }
             }
             ("simd_extract", [vector, index]) => {
