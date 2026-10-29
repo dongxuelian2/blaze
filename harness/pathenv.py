@@ -157,6 +157,11 @@ pub fn selected(_: TokenStream) -> TokenStream { format!("{SELECTED:?}").parse()
     "inner/src/lib.rs": COMPILED["macros/src/lib.rs"],
 })
 
+# The dependency's bytes stay the same while its inherited environment changes.
+NESTED_STATEFUL = dict(NESTED, **{
+    "inner/src/lib.rs": STATEFUL["macros/src/lib.rs"],
+})
+
 # The script's directives stay identical while its generated file changes.
 GENERATED = dict(SCRIPT, **{
     "build.rs": SCRIPT["build.rs"].replace(
@@ -240,7 +245,7 @@ def main(config):
     def sequence(name, files, steps):
         ws, home = work / name, work / (name + "-home")
         write_workspace(ws, files)
-        native = name in ("native", "compiled", "stateful", "nested")
+        native = name in ("native", "compiled", "stateful", "nested", "nested-stateful")
         if native:
             # The macro sandbox can read its workspace; keep the selected tools inside it.
             for directory in tools:
@@ -382,6 +387,7 @@ def main(config):
         sequence("compiled", COMPILED, macro_steps)
         sequence("stateful", STATEFUL, script_steps)
         sequence("nested", NESTED, macro_steps)
+        sequence("nested-stateful", NESTED_STATEFUL, script_steps)
         sequence("required", REQUIRED, [
             ("rejected", [tools[0]], None), ("recovered", [tools[1]], None),
             ("identical", [tools[1]], None),
