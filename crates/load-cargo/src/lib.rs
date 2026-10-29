@@ -13,7 +13,10 @@ mod listed;
 mod unsandboxed;
 mod wasm;
 mod wrap;
-pub use listed::{Compiled, Own, is_listed, own_libraries_with, serve_listed_with};
+pub use listed::{
+    Compiled, Own, OwnWithEnv, is_listed, own_libraries_with, own_libraries_with_env,
+    serve_listed_with,
+};
 pub use unsandboxed::{Unsandboxed, unsandboxed_macros_with};
 pub use wasm::{LoadWasm, is_wasm, wasm_macros_with};
 pub use wrap::{Wrap, asked, wrap_expanders};
@@ -27,7 +30,7 @@ use hir_expand::proc_macro::{
 use ide_db::{
     ChangeWithProcMacros, FxHashMap, FxHashSet, RootDatabase,
     base_db::{
-        Crate, CrateGraphBuilder, Env, LibraryRoots, LocalRoots, ProcMacroLoadingError,
+        Crate, CrateGraphBuilder, Env, LibraryRoots, LocalRoots, ProcMacroLoadingError, ProcessEnv,
         SourceDatabase, SourceRoot, SourceRootId,
         salsa::{Database as _, Durability, Setter},
     },
@@ -159,6 +162,19 @@ pub struct Loaded {
 }
 
 impl Loaded {
+    /// Drops the native servers so the next add starts them with the load's environment.
+    /// Native libraries can retain values in statics across expansions, and replacing a
+    /// library at the same filename must not keep the old process's copy.
+    pub fn reset_proc_macro_servers(&mut self) -> bool {
+        let had = self.proc_macro_server.is_some()
+            || self.listed_server.is_some()
+            || self.unsandboxed_servers.iter().any(Option::is_some);
+        self.proc_macro_server = None;
+        self.listed_server = None;
+        self.unsandboxed_servers = [None, None];
+        had
+    }
+
     pub fn workspaces(&self) -> &[ProjectWorkspace] {
         &self.workspaces
     }
@@ -212,6 +228,21 @@ impl Loaded {
             members.push(ids.into_values().collect::<Vec<_>>());
             proc_macros.extend(paths);
         }
+        // Keep request variables in memory and on commands, never in crate descriptions.
+        // Explicit removals prevent a later request from inheriting the worker's old values.
+        let command_env = match ProcessEnv::try_get(db) {
+            Some(process) => {
+                let vars = process.vars(db);
+                let mut env: FxHashMap<_, _> =
+                    std::env::vars().map(|(key, _)| (key, None)).collect();
+                env.extend(
+                    vars.iter().map(|(key, value)| (key.to_owned(), Some(value.to_owned()))),
+                );
+                env.extend(extra_env.iter().map(|(key, value)| (key.clone(), value.clone())));
+                env
+            }
+            None => extra_env.clone(),
+        };
         // A library rustc compiled is expanded with what the caller has of it, if anything.
         let unlisted: Vec<listed::Compiled> = match listed::owned() {
             true => {
@@ -244,7 +275,8 @@ impl Loaded {
             false => Vec::new(),
         };
         let own: FxHashMap<AbsPathBuf, AbsPathBuf> = {
-            let found = listed::own(ws.sysroot.root(), ws.workspace_root(), &unlisted);
+            let found =
+                listed::own(ws.sysroot.root(), ws.workspace_root(), &unlisted, &command_env);
             let mut own = FxHashMap::default();
             let mut refused = Vec::new();
             for (it, found) in unlisted.into_iter().zip(found) {
@@ -282,7 +314,7 @@ impl Loaded {
             .map(|(_, path)| path.clone())
             .collect();
         let outside_env = {
-            let mut env = extra_env.clone();
+            let mut env = command_env.clone();
             env.insert(proc_macro_api::wrap::UNSANDBOXED.to_owned(), Some("1".to_owned()));
             env
         };
@@ -297,7 +329,7 @@ impl Loaded {
                 Err(_) => false,
             })
         };
-        for (outside_one, env) in [(false, extra_env), (true, &outside_env)] {
+        for (outside_one, env) in [(false, &command_env), (true, &outside_env)] {
             let (toolchain, listed_one) = match outside_one {
                 false => (&mut self.proc_macro_server, &mut self.listed_server),
                 true => {
