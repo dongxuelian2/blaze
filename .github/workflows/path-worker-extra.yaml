@@ -1,5 +1,8 @@
 name: PATH worker macro cache checks
 on:
+  push:
+    branches: [codex/path-worker-805-validation]
+    paths: [.github/workflows/path-worker-extra.yaml]
   workflow_dispatch:
     inputs:
       compiler_run:
@@ -21,7 +24,7 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           name: path-worker-compiler
-          run-id: ${{ inputs.compiler_run }}
+          run-id: ${{ inputs.compiler_run || '40819435468' }}
           github-token: ${{ github.token }}
           path: target/release
       - run: chmod +x target/release/blaze target/release/blaze-engine target/release/blaze-rustc target/release/blaze-proc-macro-srv
