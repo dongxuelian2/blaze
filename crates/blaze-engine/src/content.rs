@@ -29,7 +29,9 @@ fn native_macro_environment(db: &RootDatabase, krate: Crate) -> Option<String> {
         else {
             continue;
         };
-        let Some(macros) = loaded.macros() else { continue };
+        let Some(macros) = hir_expand::proc_macro::CrateProcMacros::macros(loaded) else {
+            continue;
+        };
         for proc_macro in macros.iter() {
             inherited |= proc_macro.expander.inherits_process_env();
         }
