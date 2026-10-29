@@ -336,7 +336,7 @@ impl ProcMacroExpander for Kept {
         {
             // Opaque native hosts can read inherited variables as well as crate variables.
             // Only their digest enters the store; keep the request snapshot out of artifacts.
-            let env: Env = match ide_db::base_db::ProcessEnv::try_get(db) {
+            let env: Env = match base_db::ProcessEnv::try_get(db) {
                 Some(process) => process.vars(db).clone(),
                 None => std::env::vars_os()
                     .filter_map(|(key, value)| {
