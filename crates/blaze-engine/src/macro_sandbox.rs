@@ -30,6 +30,7 @@ static SEEN: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 /// Has every proc-macro server be started in the sandbox, but those of the macros the root
 /// manifest of their workspace takes out.
 pub(crate) fn install() {
+    proc_macro_api::wrap::inherited_env_with(|name| !sandbox::on() || given_to_server(name));
     proc_macro_api::wrap::wrap_servers_with(wrapped);
     load_cargo::unsandboxed_macros_with(Box::new(|workspace, crate_name, library| {
         let (workspace, library): (&Path, &Path) = (workspace.as_ref(), library.as_ref());

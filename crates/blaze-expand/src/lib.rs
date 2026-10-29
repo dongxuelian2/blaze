@@ -292,6 +292,10 @@ pub fn server_failed() -> Option<&'static str> {
 }
 
 impl ProcMacroExpander for Kept {
+    fn inherits_process_env(&self) -> bool {
+        self.inner.inherits_process_env()
+    }
+
     fn requires_session(&self) -> bool {
         self.inner.requires_session()
     }
@@ -324,9 +328,35 @@ impl ProcMacroExpander for Kept {
         let start = Instant::now();
         let mode = config().mode;
         let store = (!self.skipped).then(store).flatten();
-        let call = store.and_then(|_| {
+        let mut call = store.and_then(|_| {
             self.call(subtree, attrs, env, def_site, call_site, mixed_site, &current_dir)
         });
+        if self.inner.inherits_process_env()
+            && let Some(call) = &mut call
+        {
+            // Opaque native hosts can read inherited variables as well as crate variables.
+            // Only their digest enters the store; keep the request snapshot out of artifacts.
+            let env: Env = match base_db::ProcessEnv::try_get(db) {
+                Some(process) => process.vars(db).clone(),
+                None => std::env::vars_os()
+                    .filter_map(|(key, value)| {
+                        Some((key.into_string().ok()?, value.into_string().ok()?))
+                    })
+                    .collect(),
+            };
+            let mut vars: Vec<_> = env.iter().collect();
+            vars.sort_unstable();
+            let mut hash = Sha256::new();
+            hash.update(b"native macro environment");
+            hash.update(call.key);
+            for (key, value) in vars {
+                for field in [key, value] {
+                    hash.update((field.len() as u64).to_le_bytes());
+                    hash.update(field.as_bytes());
+                }
+            }
+            call.key = hash.finalize().into();
+        }
         if call.is_some() {
             COUNTS.keyed.add(start.elapsed());
         }
