@@ -107,14 +107,17 @@ ASSEMBLY = dict(PLAIN, **{
 })
 
 REQUIRED = dict(PLAIN, **{
-    "src/main.rs": '''const PATH_LAST: usize = {
-    let path = env!("PATH").as_bytes();
-    path[path.len() - 1] as usize
-};
-fn main() {
-    let bytes: [u8; PATH_LAST] = [0; b'd' as usize];
-    println!("{}", bytes.len());
+    "build.rs": '''fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rustc-check-cfg=cfg(path_first)");
+    let tool = std::process::Command::new("blaze-path-tool").output().unwrap();
+    assert!(tool.status.success());
+    if tool.stdout == b"first\\n" { println!("cargo:rustc-cfg=path_first"); }
 }
+''',
+    "src/main.rs": '''#[cfg(path_first)]
+compile_error!("PATH selected the first tool");
+fn main() { println!("ready"); }
 ''',
 })
 
@@ -245,19 +248,14 @@ def main(config):
                 if native:
                     prefix = [ws / path.name if path in tools else path for path in prefix]
                 env["PATH"] = os.pathsep.join([str(path) for path in prefix] + [base["PATH"]])
-                if name == "required":
-                    # A suffix controls the last byte even after Blaze prepends its toolchain.
-                    # These directories follow the system tools, so their resolution is unchanged.
-                    suffix = tools[0] if label == "missing" else tools[1]
-                    env["PATH"] += os.pathsep + str(suffix)
                 if value is not None:
                     env["SCRIPT_VALUE"] = value
                 # Use the pinned tools directly, without rustup changing their PATH.
                 reference = dict(env, RUSTC=rustc, CARGO_TARGET_DIR=str(work / "reference" / name / label))
                 expected, _ = run([cargo, "run", "--offline", "-q"], ws, reference)
-                missing = name == "required" and label == "missing"
-                check(f"{name}/{label}: reference verdict", (expected.returncode != 0) if missing else expected.returncode == 0,
-                      expected.stderr[-500:] if expected.returncode and not missing else "")
+                rejected = name == "required" and label == "rejected"
+                check(f"{name}/{label}: reference verdict", (expected.returncode != 0) if rejected else expected.returncode == 0,
+                      expected.stderr[-500:] if expected.returncode and not rejected else "")
                 assembled_before = assembler_log.read_text().splitlines() if assembler_log.exists() else []
                 linked_before = linker_log.read_text().splitlines() if linker_log.exists() else []
                 ran, elapsed = run([str(blaze), "run", "-q"], ws, env)
@@ -300,10 +298,10 @@ def main(config):
                         check(f"{name}/{label}: current tool linked", bool(used) and
                               all(tool == selected for tool in used), repr(used))
                 print(json.dumps(record), flush=True)
-                check(f"{name}/{label}: agrees with Cargo", (missing or expected.returncode == 0) and
+                check(f"{name}/{label}: agrees with Cargo", (rejected or expected.returncode == 0) and
                       (ran.returncode, ran.stdout) == (expected.returncode, expected.stdout),
                       f"exit {ran.returncode}, {ran.stdout!r}" + (f", {ran.stderr[-500:]}" if ran.returncode else ""))
-                if missing:
+                if rejected:
                     check(f"{name}/{label}: source error names PATH", "PATH" in ran.stderr)
                     continue
                 if first_workers is None:
@@ -342,7 +340,8 @@ def main(config):
         sequence("compiled", COMPILED, macro_steps)
         sequence("stateful", STATEFUL, macro_steps)
         sequence("required", REQUIRED, [
-            ("missing", [], None), ("recovered", [], None), ("identical", [], None),
+            ("rejected", [tools[0]], None), ("recovered", [tools[1]], None),
+            ("identical", [tools[1]], None),
         ])
         sequence("linker", PLAIN, [
             ("initial", [tools[0]], None), ("identical", [tools[0]], None),

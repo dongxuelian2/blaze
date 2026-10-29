@@ -233,8 +233,9 @@ impl Loaded {
         let command_env = match ProcessEnv::try_get(db) {
             Some(process) => {
                 let vars = process.vars(db);
-                let mut env: FxHashMap<_, _> =
-                    std::env::vars().map(|(key, _)| (key, None)).collect();
+                let mut env: FxHashMap<_, _> = std::env::vars_os()
+                    .filter_map(|(key, _)| Some((key.into_string().ok()?, None)))
+                    .collect();
                 env.extend(
                     vars.iter().map(|(key, value)| (key.to_owned(), Some(value.to_owned()))),
                 );
