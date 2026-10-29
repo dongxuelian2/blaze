@@ -1,0 +1,40 @@
+name: PATH worker cold-store unit gate
+on:
+  push:
+    branches: [codex/path-worker-805-validation]
+    paths: [.github/workflows/path-worker-unit-gate.yaml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_NET_RETRY: 10
+      CARGO_TERM_COLOR: always
+      BLAZE_SANDBOX: ''
+      PYTHON: python3
+      BLAZE: true
+      BLAZE_TESTS: affected
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/blaze
+        with:
+          job: tests
+      # Same setup and command as blaze-platform.yaml's Linux tests job. Its main-branch
+      # limit allows a cold store to finish the twenty release test binaries.
+      - name: Upstream unit gate with cold-store allowance
+        timeout-minutes: 335
+        run: python3 -u harness/unittests.py | tee /tmp/path-worker-units.log
+      - name: Preserve unit output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: path-worker-unit-output
+          path: /tmp/path-worker-units.log
+          retention-days: 7
