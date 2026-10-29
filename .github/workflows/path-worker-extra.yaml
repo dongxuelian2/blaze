@@ -14,6 +14,7 @@ permissions:
   actions: read
 jobs:
   expansions:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -24,7 +25,7 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           name: path-worker-compiler
-          run-id: ${{ inputs.compiler_run || '40819435468' }}
+          run-id: ${{ inputs.compiler_run || '40823809097' }}
           github-token: ${{ github.token }}
           path: target/release
       - run: chmod +x target/release/blaze target/release/blaze-engine target/release/blaze-rustc target/release/blaze-proc-macro-srv
@@ -35,3 +36,30 @@ jobs:
           for backend in cranelift llvm; do
             BLAZE_BACKEND=$backend BLAZE_OPT=2 BLAZE_EMIT=fast python3 harness/expansions.py
           done
+
+  nix-graph:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/toolchain
+        with:
+          llvm: build
+      - name: Regenerate daemon dependency metadata without compiling
+        run: nix develop --command python3 tools/nix/unit_graph.py daemon
+      - name: Validate every platform's runtime dependency edge
+        run: |
+          python3 - <<'PY'
+          import json
+          data = json.load(open('tools/nix/units/daemon.json'))
+          for system, graph in data['systems'].items():
+              units = [unit for unit in graph['units'].values() if unit['pkg'].startswith('blaze-cargo@') and unit['kind'] == 'lib']
+              assert units and all(any(dep['name'] == 'tempfile' for dep in unit['deps']) for unit in units), system
+              print(system + ': blaze-cargo links tempfile')
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: path-worker-nix-units
+          path: tools/nix/units/daemon.json
+          retention-days: 7
