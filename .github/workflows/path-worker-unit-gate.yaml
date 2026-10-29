@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 jobs:
   tests:
     runs-on: ubuntu-24.04
@@ -16,7 +17,7 @@ jobs:
       CARGO_TERM_COLOR: always
       BLAZE_SANDBOX: ''
       PYTHON: python3
-      BLAZE: true
+      BLAZE: 'true'
       BLAZE_TESTS: affected
     defaults:
       run:
