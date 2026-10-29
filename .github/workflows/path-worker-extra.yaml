@@ -1,0 +1,34 @@
+name: PATH worker macro cache checks
+on:
+  workflow_dispatch:
+    inputs:
+      compiler_run:
+        description: 'Run that built the compiler artifact to test'
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  expansions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/toolchain
+        with:
+          llvm: build
+      - uses: actions/download-artifact@v7
+        with:
+          name: path-worker-compiler
+          run-id: ${{ inputs.compiler_run }}
+          github-token: ${{ github.token }}
+          path: target/release
+      - run: chmod +x target/release/blaze target/release/blaze-engine target/release/blaze-rustc target/release/blaze-proc-macro-srv
+      - name: Existing native expansion cache regression, both backends
+        env:
+          BLAZE_BIN: ${{ github.workspace }}/target/release/blaze-engine
+        run: |
+          for backend in cranelift llvm; do
+            BLAZE_BACKEND=$backend BLAZE_OPT=2 BLAZE_EMIT=fast python3 harness/expansions.py
+          done
