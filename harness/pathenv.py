@@ -113,6 +113,18 @@ REQUIRED = dict(NATIVE, **{
     ),
 })
 
+# env! captures the macro compiler's PATH, rather than the expansion process's PATH.
+COMPILED = dict(NATIVE, **{
+    "macros/src/lib.rs": NATIVE["macros/src/lib.rs"].replace(
+        'std::process::Command::new("blaze-path-tool").output()',
+        '''std::env::split_paths(env!("PATH"))
+        .map(|dir| dir.join("blaze-path-tool"))
+        .find(|path| path.is_file())
+        .map_or_else(|| Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+                     |path| std::process::Command::new(path).output())''',
+    ),
+})
+
 # The script's directives stay identical while its generated file changes.
 GENERATED = dict(SCRIPT, **{
     "build.rs": SCRIPT["build.rs"].replace(
@@ -187,7 +199,7 @@ def main(config):
     def sequence(name, files, steps):
         ws, home = work / name, work / (name + "-home")
         write_workspace(ws, files)
-        native = name in ("native", "required")
+        native = name in ("native", "required", "compiled")
         if native:
             # The macro sandbox can read its workspace; keep the selected tools inside it.
             for directory in tools:
@@ -301,12 +313,14 @@ def main(config):
         ]
         sequence("script", SCRIPT, script_steps)
         sequence("generated", GENERATED, script_steps)
-        sequence("native", NATIVE, [
+        macro_steps = [
             ("initial", [tools[0]], None), ("identical", [tools[0]], None),
             ("empty-prefix", [empty, tools[0]], None),
             ("different-tool", [tools[1]], None), ("tool-removed", [], None),
             ("restored", [tools[0]], None),
-        ])
+        ]
+        sequence("native", NATIVE, macro_steps)
+        sequence("compiled", COMPILED, macro_steps)
         sequence("required", REQUIRED, [
             ("missing", [], None), ("recovered", [tools[0]], None),
             ("identical", [tools[0]], None),
