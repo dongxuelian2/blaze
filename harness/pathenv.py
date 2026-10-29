@@ -124,6 +124,9 @@ COMPILED = dict(NATIVE, **{
 
 # A fresh request must not inherit a native macro's value cached in process-local state.
 STATEFUL = dict(NATIVE, **{
+    "Cargo.toml": NATIVE["Cargo.toml"] +
+        '\n[workspace.metadata.blaze.sandbox]\nbuild-script-env = ["SCRIPT_VALUE"]\n',
+    "build.rs": SCRIPT["build.rs"],
     "macros/src/lib.rs": NATIVE["macros/src/lib.rs"].replace(
         '    let selected = match ',
         '    static SELECTED: std::sync::OnceLock<String> = std::sync::OnceLock::new();\n'
@@ -148,6 +151,9 @@ pub fn selected(_: TokenStream) -> TokenStream { format!("{SELECTED:?}").parse()
 
 # The dependency's bytes stay the same while its inherited environment changes.
 NESTED_STATEFUL = dict(NESTED, **{
+    "Cargo.toml": NESTED["Cargo.toml"] +
+        '\n[workspace.metadata.blaze.sandbox]\nbuild-script-env = ["SCRIPT_VALUE"]\n',
+    "macros/build.rs": SCRIPT["build.rs"],
     "inner/src/lib.rs": STATEFUL["macros/src/lib.rs"],
 })
 

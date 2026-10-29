@@ -250,7 +250,15 @@ impl Loaded {
                 env.extend(extra_env.iter().map(|(key, value)| (key.clone(), value.clone())));
                 env
             }
-            None => extra_env.clone(),
+            None => {
+                let mut env: FxHashMap<_, _> = std::env::vars_os()
+                    .filter_map(|(key, value)| {
+                        Some((key.into_string().ok()?, Some(value.into_string().ok()?)))
+                    })
+                    .collect();
+                env.extend(extra_env.iter().map(|(key, value)| (key.clone(), value.clone())));
+                env
+            }
         };
         // A library rustc compiled is expanded with what the caller has of it, if anything.
         let unlisted: Vec<listed::Compiled> = match listed::owned() {
@@ -333,6 +341,14 @@ impl Loaded {
             env.insert(proc_macro_api::wrap::UNSANDBOXED.to_owned(), Some("1".to_owned()));
             env
         };
+        // Inherited variables still obey the sandbox's existing allowlist. Passing a
+        // snapshot as explicit command overrides must not promote shell credentials.
+        let mut server_env: FxHashMap<_, _> = command_env
+            .iter()
+            .filter(|(name, _)| proc_macro_api::wrap::inherits(name))
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        server_env.extend(extra_env.iter().map(|(name, value)| (name.clone(), value.clone())));
         // The toolchain's server is started for the libraries the other does not serve only,
         // so a load whose proc macros are all listed starts none of the toolchain's.
         let wanted = |listed_one: bool, outside_one: bool| {
@@ -344,7 +360,7 @@ impl Loaded {
                 Err(_) => false,
             })
         };
-        for (outside_one, env) in [(false, &command_env), (true, &outside_env)] {
+        for (outside_one, env) in [(false, &server_env), (true, &outside_env)] {
             let (toolchain, listed_one) = match outside_one {
                 false => (&mut self.proc_macro_server, &mut self.listed_server),
                 true => {
@@ -928,6 +944,10 @@ fn expander_to_proc_macro(
 struct Expander(proc_macro_api::ProcMacro);
 
 impl ProcMacroExpander for Expander {
+    fn inherits_process_env(&self) -> bool {
+        true
+    }
+
     fn expand(
         &self,
         db: &dyn SourceDatabase,

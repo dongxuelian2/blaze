@@ -19,6 +19,22 @@ use triomphe::Arc;
 
 type Hash = [u8; 32];
 
+fn native_macro_environment(db: &RootDatabase, krate: Crate) -> Option<String> {
+    let inherited = krate.data(db).dependencies.iter().any(|dep| {
+        dep.crate_id.data(db).target_kind.is_proc_macro()
+            && hir_expand::proc_macro::ProcMacros::get_for_crate(db, dep.crate_id)
+                .and_then(|it| it.macros())
+                .is_some_and(|macros| macros.iter().any(|it| it.expander.inherits_process_env()))
+    });
+    if !inherited {
+        return None;
+    }
+    let env = base_db::ProcessEnv::try_get(db)
+        .map(|it| it.vars(db).clone())
+        .unwrap_or_else(crate::process::own);
+    Some(crate::process::fingerprint(&env))
+}
+
 /// The crates of one build. An edit makes another crate of the one it is in and of every
 /// crate of the checkout that depends on it.
 #[derive(Default)]
@@ -180,17 +196,9 @@ impl Contents {
         field(env.as_bytes());
         // What `env!` and `option_env!` in it read of the process the build is for.
         field(format!("{:?}", process_reads(krate)).as_bytes());
-        if krate
-            .data(db)
-            .dependencies
-            .iter()
-            .any(|dep| dep.crate_id.data(db).target_kind.is_proc_macro())
-        {
+        if let Some(env) = native_macro_environment(db, krate) {
             field(b"proc-macro host environment");
-            let env = base_db::ProcessEnv::try_get(db)
-                .map(|it| it.vars(db).clone())
-                .unwrap_or_else(crate::process::own);
-            field(crate::process::fingerprint(&env).as_bytes());
+            field(env.as_bytes());
         }
         if let Some(path) = hir_ty_codegen::assembler_path(db) {
             field(b"external assembler PATH");
@@ -283,17 +291,9 @@ impl Contents {
         cfgs.sort_unstable();
         field(cfgs.join("\n").as_bytes());
         field(format!("{:?}", process_reads(krate)).as_bytes());
-        if krate
-            .data(db)
-            .dependencies
-            .iter()
-            .any(|dep| dep.crate_id.data(db).target_kind.is_proc_macro())
-        {
+        if let Some(env) = native_macro_environment(db, krate) {
             field(b"proc-macro host environment");
-            let env = base_db::ProcessEnv::try_get(db)
-                .map(|it| it.vars(db).clone())
-                .unwrap_or_else(crate::process::own);
-            field(crate::process::fingerprint(&env).as_bytes());
+            field(env.as_bytes());
         }
         if let Some(path) = hir_ty_codegen::assembler_path(db) {
             field(b"external assembler PATH");
