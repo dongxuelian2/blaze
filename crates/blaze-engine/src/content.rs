@@ -23,7 +23,7 @@ fn native_macro_environment(db: &RootDatabase, krate: Crate) -> Option<String> {
     let mut inherited = false;
     for dep in &krate.data(db).dependencies {
         if dep.crate_id.data(db).target_kind.is_proc_macro()
-            && hir_expand::proc_macro::inherits_process_env(db, dep.crate_id)
+            && hir::ProcMacros::inherits_process_env(db, dep.crate_id)
         {
             inherited = true;
             break;

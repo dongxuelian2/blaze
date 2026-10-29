@@ -150,6 +150,15 @@ impl ProcMacros {
     pub fn init_default(db: &dyn SourceDatabase, durability: Durability) {
         _ = Self::builder(Default::default()).durability(durability).new(db);
     }
+
+    /// Whether a macro loaded for this crate can read the server's inherited environment.
+    pub fn inherits_process_env(db: &dyn SourceDatabase, krate: Crate) -> bool {
+        Self::get_for_crate(db, krate)
+            .and_then(|it| {
+                it.macros().map(|macros| macros.iter().any(|it| it.expander.inherits_process_env()))
+            })
+            .unwrap_or(false)
+    }
 }
 
 #[salsa::tracked]
@@ -228,15 +237,6 @@ pub fn may_have_session_macros(db: &dyn SourceDatabase, krate: Crate) -> bool {
         })
         .unwrap_or(false)
         || krate.data(db).dependencies.iter().any(|dep| may_have_session_macros(db, dep.crate_id))
-}
-
-/// Whether a macro loaded for this crate can read the server's inherited environment.
-pub fn inherits_process_env(db: &dyn SourceDatabase, krate: Crate) -> bool {
-    ProcMacros::get_for_crate(db, krate)
-        .and_then(|it| {
-            it.macros().map(|macros| macros.iter().any(|it| it.expander.inherits_process_env()))
-        })
-        .unwrap_or(false)
 }
 
 /// A loaded proc-macro.
