@@ -106,11 +106,16 @@ ASSEMBLY = dict(PLAIN, **{
 ''',
 })
 
-REQUIRED = dict(NATIVE, **{
-    "macros/src/lib.rs": NATIVE["macros/src/lib.rs"].replace(
-        'Err(error) if error.kind() == std::io::ErrorKind::NotFound => "no tool".to_owned(),',
-        'Err(error) if error.kind() == std::io::ErrorKind::NotFound => return "PATH_REQUIRES_A_TOOL".parse().unwrap(),',
-    ),
+REQUIRED = dict(PLAIN, **{
+    "src/main.rs": '''const PATH_LAST: usize = {
+    let path = env!("PATH").as_bytes();
+    path[path.len() - 1] as usize
+};
+fn main() {
+    let bytes: [u8; PATH_LAST] = [0; b'd' as usize];
+    println!("{}", bytes.len());
+}
+''',
 })
 
 # env! captures the macro compiler's PATH, rather than the expansion process's PATH.
@@ -123,6 +128,15 @@ COMPILED = dict(NATIVE, **{
         .map_or_else(|| Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
                      |path| std::process::Command::new(path).output())''',
     ),
+})
+
+# A fresh request must not inherit a native macro's value cached in process-local state.
+STATEFUL = dict(NATIVE, **{
+    "macros/src/lib.rs": NATIVE["macros/src/lib.rs"].replace(
+        '    let selected = match ',
+        '    static SELECTED: std::sync::OnceLock<String> = std::sync::OnceLock::new();\n'
+        '    let selected = SELECTED.get_or_init(|| match ',
+    ).replace('    };\n    format!', '    });\n    format!'),
 })
 
 # The script's directives stay identical while its generated file changes.
@@ -199,7 +213,7 @@ def main(config):
     def sequence(name, files, steps):
         ws, home = work / name, work / (name + "-home")
         write_workspace(ws, files)
-        native = name in ("native", "required", "compiled")
+        native = name in ("native", "compiled", "stateful")
         if native:
             # The macro sandbox can read its workspace; keep the selected tools inside it.
             for directory in tools:
@@ -231,6 +245,11 @@ def main(config):
                 if native:
                     prefix = [ws / path.name if path in tools else path for path in prefix]
                 env["PATH"] = os.pathsep.join([str(path) for path in prefix] + [base["PATH"]])
+                if name == "required":
+                    # A suffix controls the last byte even after Blaze prepends its toolchain.
+                    # These directories follow the system tools, so their resolution is unchanged.
+                    suffix = tools[0] if label == "missing" else tools[1]
+                    env["PATH"] += os.pathsep + str(suffix)
                 if value is not None:
                     env["SCRIPT_VALUE"] = value
                 # Use the pinned tools directly, without rustup changing their PATH.
@@ -321,9 +340,9 @@ def main(config):
         ]
         sequence("native", NATIVE, macro_steps)
         sequence("compiled", COMPILED, macro_steps)
+        sequence("stateful", STATEFUL, macro_steps)
         sequence("required", REQUIRED, [
-            ("missing", [], None), ("recovered", [tools[0]], None),
-            ("identical", [tools[0]], None),
+            ("missing", [], None), ("recovered", [], None), ("identical", [], None),
         ])
         sequence("linker", PLAIN, [
             ("initial", [tools[0]], None), ("identical", [tools[0]], None),

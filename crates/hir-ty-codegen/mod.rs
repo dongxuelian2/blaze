@@ -113,6 +113,7 @@ mod cached;
 mod debuginfo;
 pub use debuginfo::Sidecar;
 mod f16_f128;
+pub mod flight;
 mod float_pair;
 mod fncache;
 pub use fncache::{Call, Found, Kind as ReachKind, Reach, tests_reach};
@@ -179,6 +180,7 @@ mod unwind;
 mod vtable;
 pub mod wasm;
 mod wasm_object;
+pub mod watch;
 mod x86;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2330,6 +2332,8 @@ struct ObjectCodegen<'a, 'db> {
     /// The root each name of a root is of, as [`ObjectCodegen::find_stored_roots`] named
     /// them; `None` for a name more than one has.
     root_names: FxHashMap<StableName, Option<FunctionId>>,
+    /// What is told of the functions put in the object, when the build is watched.
+    watch: Option<watch::Watch>,
 }
 
 /// Why an entry with a file of its own under what stands for cargo's directory is not kept.
@@ -2905,9 +2909,11 @@ fn in_source(db: &dyn HirDatabase, id: InFile<span::ErasedFileAstId>) -> bool {
 /// The code of a non-generic function.
 #[salsa::tracked(returns(ref))]
 fn compiled_root<'db>(db: &'db dyn HirDatabase, func: FunctionId) -> Result<CompiledFunction> {
+    let _timer = watch::Timer::of(|| watch::Timed::Root(func));
     let _span = tracing::info_span!(target: "blaze", "compiled_root").entered();
     COMPILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     compiles_of(func.krate(db));
+    let _flight = flight::Flight::root(db, func);
     {
         let mut recompiled = RECOMPILED.lock().unwrap_or_else(|e| e.into_inner());
         if recompiled.1 < RECOMPILED_KEPT {
@@ -3107,9 +3113,11 @@ fn compiled_instance<'db>(
     instance: Instance,
     env: StoredParamEnvAndCrate,
 ) -> Result<CompiledFunction> {
+    let _timer = watch::Timer::of(|| watch::Timed::instance(&instance, &env));
     let _span = tracing::info_span!(target: "blaze", "compiled_instance").entered();
     COMPILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     compiles_of(env.krate);
+    let _flight = flight::Flight::instance(db, &instance, &env);
     tier::for_build(|| instance_code(db, instance, env, Detach::No)).map(Produced::code)
 }
 
@@ -4310,10 +4318,11 @@ fn describe_scopes(
     of_binding
 }
 
-/// The error the build stops with when the evaluation of `of`, or of a constant it reads, ran
-/// past its budget (`const-eval` under `[workspace.metadata.blaze]`): what it ran out of, where,
-/// and the setting that raises it. `None` for any other error.
-fn over_budget(
+/// The error the build stops with when the evaluation of `of`, or of a constant it reads, is
+/// refused, naming the constant: it ran past its budget (`const-eval` under
+/// `[workspace.metadata.blaze]`), with what it ran out of, where, and the setting that raises
+/// it; or its value points to memory allocated while evaluating it. `None` for any other error.
+fn refused_const_eval(
     db: &dyn HirDatabase,
     of: GeneralConstId<'_>,
     e: &ConstEvalError<'_>,
@@ -4330,7 +4339,7 @@ fn over_budget(
     let mut what = name(of).unwrap_or_else(|| "a constant expression".to_owned());
     let ConstEvalError::MirEvalError(e) = e else { return None };
     let mut e: &MirEvalError<'_> = e;
-    let (spent, at) = loop {
+    loop {
         match e {
             MirEvalError::InFunction(inner, _) => e = &**inner,
             MirEvalError::ConstEvalError(inner, error) => {
@@ -4338,18 +4347,22 @@ fn over_budget(
                 what = format!("`{inner}`");
                 e = inner_error;
             }
-            MirEvalError::OverBudget { spent, at } => break (*spent, *at),
+            MirEvalError::OverBudget { spent, at } => {
+                let at = at
+                    .and_then(|(owner, span)| fncache::location(db, owner, span))
+                    .map(|it| format!(" at {it}"))
+                    .unwrap_or_default();
+                return Some(CodegenError::Refused(format!(
+                    "const eval of {what} {spent}{at} (raise {} under `[workspace.metadata.blaze]`)",
+                    spent.setting()
+                )));
+            }
+            MirEvalError::HeapInValue { .. } => {
+                return Some(CodegenError::Refused(format!("the value of {what}: {e:?}")));
+            }
             _ => return None,
         }
-    };
-    let at = at
-        .and_then(|(owner, span)| fncache::location(db, owner, span))
-        .map(|it| format!(" at {it}"))
-        .unwrap_or_default();
-    Some(CodegenError::Refused(format!(
-        "const eval of {what} {spent}{at} (raise {} under `[workspace.metadata.blaze]`)",
-        spent.setting()
-    )))
+    }
 }
 
 /// File, line and column of a place in a body for a debugger, as rustc gives code its lines.
@@ -5390,6 +5403,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             found_instances: FxHashMap::default(),
             stored_roots: FxHashMap::default(),
             root_names: FxHashMap::default(),
+            watch: watch::Watch::new(base.is_none()),
         })
     }
 
@@ -5556,10 +5570,13 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         {
             let id =
                 self.module.declare_function(&symbol, Linkage::Export, entry.code.signature())?;
-            if let Err(e) = self.stitch_entry(&name, id) {
-                eprintln!("entry of `{name}` does not fit: {e}");
-                cached::Entries::ban(&name);
-                self.misfit = true;
+            match self.stitch_entry(&name, id) {
+                Ok(ids) => self.placed(id, watch::Of::Root(func), &ids, watch::How::Stored),
+                Err(e) => {
+                    eprintln!("entry of `{name}` does not fit: {e}");
+                    cached::Entries::ban(&name);
+                    self.misfit = true;
+                }
             }
             return Ok(symbol);
         }
@@ -5591,6 +5608,8 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
                 return Err(e);
             }
         };
+        let kept = if unit.is_some() { watch::How::Unit } else { watch::How::Unchanged };
+        self.placed(id, watch::Of::Root(func), &ids, kept);
         let of = later::Of::Root { func, symbol: symbol.clone() };
         let mut later = later::Later::new(&self.module, id, of, compiled, ids);
         // The rows of the Cranelift code are not those of LLVM's.
@@ -5959,10 +5978,13 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             }
             let start = stdx::time::Instant::now();
             while let Some((name, id)) = self.found_pending.pop() {
-                if let Err(e) = self.stitch_entry(&name, id) {
-                    eprintln!("entry of `{name}` does not fit: {e}");
-                    cached::Entries::ban(&name);
-                    self.misfit = true;
+                match self.stitch_entry(&name, id) {
+                    Ok(ids) => self.placed_entry(id, &name, &ids),
+                    Err(e) => {
+                        eprintln!("entry of `{name}` does not fit: {e}");
+                        cached::Entries::ban(&name);
+                        self.misfit = true;
+                    }
                 }
             }
             self.phases.define += start.elapsed();
@@ -6239,6 +6261,8 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             );
         }
         let ids = self.stitch(id, compiled)?;
+        let kept = if unit.is_some() { watch::How::Unit } else { watch::How::Unchanged };
+        self.placed(id, watch::Of::Instance(instance, env), &ids, kept);
         let of = later::Of::Instance { instance: instance.clone(), env: env.clone() };
         let mut later = later::Later::new(&self.module, id, of, compiled, ids);
         later.unit_rows =
@@ -6562,7 +6586,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
     }
 
     /// Defines `id` as the function of an entry, and declares what the entry refers to.
-    fn stitch_entry(&mut self, name: &str, id: FuncId) -> Result<()> {
+    fn stitch_entry(&mut self, name: &str, id: FuncId) -> Result<Resolved> {
         use cached::{CachedData, CachedTarget};
         let Some(entry) = self.entries.as_ref().and_then(|it| it.get(name)) else {
             unsupported!("an entry that was in the store is not");
@@ -6636,7 +6660,28 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         }
         self.bodies += 1;
         self.kept.found += 1;
-        Ok(())
+        Ok(ids)
+    }
+
+    /// Tells the watch of the build, if any, of `id`, which is `of` and calls `ids`.
+    fn placed(&mut self, id: FuncId, of: watch::Of<'_>, ids: &Resolved, kept: watch::How) {
+        if let Some(watch) = &mut self.watch {
+            let calls = ids.funcs.iter().map(|it| it.as_u32()).collect();
+            watch.placed(self.db, id.as_u32(), of, calls, kept);
+        }
+    }
+
+    /// The same of the function of the entry `name`.
+    fn placed_entry(&mut self, id: FuncId, name: &str, ids: &Resolved) {
+        if self.watch.is_none() {
+            return;
+        }
+        match self.found_instances.get(&id).cloned() {
+            Some((instance, env)) => {
+                self.placed(id, watch::Of::Instance(&instance, &env), ids, watch::How::Stored)
+            }
+            None => self.placed(id, watch::Of::Named(name), ids, watch::How::Stored),
+        }
     }
 
     /// Defines `id` as a compiled function, and declares everything the function refers to.
@@ -10722,7 +10767,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             unsupported!("extern static without a rustc symbol");
         }
         let allocation = db.const_eval_static(id).map_err(|e| {
-            over_budget(db, GeneralConstId::StaticId(id), &e)
+            refused_const_eval(db, GeneralConstId::StaticId(id), &e)
                 .unwrap_or_else(|| CodegenError::Frontend(format!("const eval: {e:?}")))
         })?;
         // Nothing can be written to a static of no size.
@@ -10866,7 +10911,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         let db = self.cg.db;
         let UnevaluatedConst { def, args } = unevaluated;
         let frontend = |e: ConstEvalError<'db>| {
-            over_budget(db, def.0, &e)
+            refused_const_eval(db, def.0, &e)
                 .unwrap_or_else(|| CodegenError::Frontend(format!("const eval: {e:?}")))
         };
         match def.0 {

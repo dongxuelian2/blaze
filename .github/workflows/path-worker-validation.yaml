@@ -98,6 +98,7 @@ jobs:
 
   gate:
     needs: focused
+    if: inputs.compiler_run == ''
     uses: ./.github/workflows/blaze-platform.yaml
     with:
       platform: linux-x64

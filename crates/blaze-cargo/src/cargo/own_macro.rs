@@ -259,6 +259,16 @@ pub fn libraries_of(
     workspace: &Path,
     libraries: &[Compiled],
 ) -> Vec<Result<Option<PathBuf>, String>> {
+    libraries_of_with_env(sysroot, workspace, libraries, &rustc_hash::FxHashMap::default())
+}
+
+/// Like [`libraries_of`], with a request's environment for the compiler subprocesses.
+pub fn libraries_of_with_env(
+    sysroot: Option<&Path>,
+    workspace: &Path,
+    libraries: &[Compiled],
+    env: &rustc_hash::FxHashMap<String, Option<String>>,
+) -> Vec<Result<Option<PathBuf>, String>> {
     let wasm = wasm();
     if !wasm && server().is_none() {
         return vec![Ok(None); libraries.len()];
@@ -302,6 +312,12 @@ pub fn libraries_of(
                         continue;
                     }
                     let mut command = std::process::Command::new(&exe);
+                    for (key, value) in env {
+                        match value {
+                            Some(value) => _ = command.env(key, value),
+                            None => _ = command.env_remove(key),
+                        }
+                    }
                     command.arg(COMMAND);
                     if as_wasm {
                         let Some(description) = description else {

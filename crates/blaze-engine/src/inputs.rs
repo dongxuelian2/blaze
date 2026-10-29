@@ -78,8 +78,10 @@ struct Script {
 }
 
 impl Script {
+    /// Whether what it reads changed, or a clean took away what it wrote: what it watches
+    /// in its package leaves out the target directory, as cargo's does.
     fn changed(&self) -> bool {
-        self.files.iter().any(Watched::changed)
+        !self.out_dir.is_dir() || self.files.iter().any(Watched::changed)
     }
 
     /// Whether the script, run again as cargo ran it, prints and writes what it did for the
@@ -234,6 +236,15 @@ impl Scripts {
             (it, value)
         }));
         for package in cargo.packages() {
+            if cargo[package]
+                .targets
+                .iter()
+                .any(|&it| matches!(cargo[it].kind, TargetKind::Lib { is_proc_macro: true }))
+            {
+                // env! in a macro crate reads the environment that compiles it, before
+                // any expansion is asked for with the invoking crate's variables.
+                variables.push(("PATH".to_owned(), run_with(config, "PATH")));
+            }
             let Some(out_dir) = build_scripts.out_dir(package) else { continue };
             // A script can resolve a tool without declaring PATH. Re-run it with the new
             // search path; unchanged output keeps the workspace and its compiled state.
