@@ -97,7 +97,6 @@ jobs:
           retention-days: 7
 
   gate:
-    needs: focused
     if: inputs.compiler_run == ''
     uses: ./.github/workflows/blaze-platform.yaml
     with:

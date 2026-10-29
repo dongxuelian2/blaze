@@ -17,6 +17,21 @@ pub fn own() -> Env {
         .collect()
 }
 
+/// An opaque macro can read any inherited variable. Keep only a digest in code identity.
+pub fn fingerprint(env: &Env) -> String {
+    use sha2::{Digest as _, Sha256};
+    let mut hash = Sha256::new();
+    let mut vars: Vec<_> = env.iter().collect();
+    vars.sort_unstable();
+    for (key, value) in vars {
+        for field in [key, value] {
+            hash.update((field.len() as u64).to_le_bytes());
+            hash.update(field.as_bytes());
+        }
+    }
+    crate::content::hex(&hash.finalize())
+}
+
 /// `env` on one line with no tab in it.
 pub fn encode(env: &Env) -> String {
     let mut line = String::new();

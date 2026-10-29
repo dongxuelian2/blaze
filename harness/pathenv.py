@@ -109,16 +109,16 @@ ASSEMBLY = dict(PLAIN, **{
 REQUIRED = dict(PLAIN, **{
     "build.rs": '''fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rustc-check-cfg=cfg(path_first)");
     let tool = std::process::Command::new("blaze-path-tool").output().unwrap();
     assert!(tool.status.success());
-    if tool.stdout == b"first\\n" { println!("cargo:rustc-cfg=path_first"); }
+    let source = if tool.stdout[0] == b'f' {
+        "fn main() { let = ; }"
+    } else { "fn main() { println!(\\\"ready\\\"); }" };
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    std::fs::write(out.join("selected.rs"), source).unwrap();
 }
 ''',
-    "src/main.rs": '''#[cfg(path_first)]
-compile_error!("PATH selected the first tool");
-fn main() { println!("ready"); }
-''',
+    "src/main.rs": 'include!(concat!(env!("OUT_DIR"), "/selected.rs"));\n',
 })
 
 # env! captures the macro compiler's PATH, rather than the expansion process's PATH.
@@ -138,8 +138,23 @@ STATEFUL = dict(NATIVE, **{
     "macros/src/lib.rs": NATIVE["macros/src/lib.rs"].replace(
         '    let selected = match ',
         '    static SELECTED: std::sync::OnceLock<String> = std::sync::OnceLock::new();\n'
-        '    let selected = SELECTED.get_or_init(|| match ',
-    ).replace('    };\n    format!', '    });\n    format!'),
+        '    let selected = SELECTED.get_or_init(|| { let tool = match ',
+    ).replace('    };\n    format!',
+              '    }; let value = std::env::var("SCRIPT_VALUE").unwrap_or_else(|_| "unset".to_owned());\n'
+              '    format!("{tool}:{value}") });\n    format!'),
+})
+
+# The outer macro must compile with the inner macro made for the same environment.
+NESTED = dict(NATIVE, **{
+    "macros/Cargo.toml": NATIVE["macros/Cargo.toml"] +
+        '[dependencies]\npath-env-inner = { path = "../inner" }\n',
+    "macros/src/lib.rs": '''use proc_macro::TokenStream;
+const SELECTED: &str = path_env_inner::selected!();
+#[proc_macro]
+pub fn selected(_: TokenStream) -> TokenStream { format!("{SELECTED:?}").parse().unwrap() }
+''',
+    "inner/Cargo.toml": NATIVE["macros/Cargo.toml"].replace('path-env-macros', 'path-env-inner'),
+    "inner/src/lib.rs": COMPILED["macros/src/lib.rs"],
 })
 
 # The script's directives stay identical while its generated file changes.
@@ -151,6 +166,15 @@ GENERATED = dict(SCRIPT, **{
         '    std::fs::write(out.join("selected"), format!("{}:{value}", tool.trim())).unwrap();',
     ),
     "src/main.rs": 'fn main() { println!("{}", include_str!(concat!(env!("OUT_DIR"), "/selected"))); }\n',
+})
+
+# The failed request has already written a file the previous environment must replace.
+FAILURE = dict(GENERATED, **{
+    "build.rs": GENERATED["build.rs"].replace(
+        '    std::fs::write(out.join("selected"), format!("{}:{value}", tool.trim())).unwrap();',
+        '    std::fs::write(out.join("selected"), format!("{}:{value}", tool.trim())).unwrap();\n'
+        '    if value.as_bytes()[0] == b\'f\' { panic!("requested script failure"); }',
+    ),
 })
 
 
@@ -216,7 +240,7 @@ def main(config):
     def sequence(name, files, steps):
         ws, home = work / name, work / (name + "-home")
         write_workspace(ws, files)
-        native = name in ("native", "compiled", "stateful")
+        native = name in ("native", "compiled", "stateful", "nested")
         if native:
             # The macro sandbox can read its workspace; keep the selected tools inside it.
             for directory in tools:
@@ -253,12 +277,24 @@ def main(config):
                 # Use the pinned tools directly, without rustup changing their PATH.
                 reference = dict(env, RUSTC=rustc, CARGO_TARGET_DIR=str(work / "reference" / name / label))
                 expected, _ = run([cargo, "run", "--offline", "-q"], ws, reference)
-                rejected = name == "required" and label == "rejected"
+                rejected = name in ("required", "failure") and label == "rejected"
                 check(f"{name}/{label}: reference verdict", (expected.returncode != 0) if rejected else expected.returncode == 0,
                       expected.stderr[-500:] if expected.returncode and not rejected else "")
                 assembled_before = assembler_log.read_text().splitlines() if assembler_log.exists() else []
                 linked_before = linker_log.read_text().splitlines() if linker_log.exists() else []
+                began = time.monotonic()
                 ran, elapsed = run([str(blaze), "run", "-q"], ws, env)
+                if ran.returncode and "daemon is still loading the workspace" in ran.stderr:
+                    # The CLI can observe its first asynchronous load before it finishes.
+                    # Wait on the explicit loading state, as blaze_cli.wait_warm does.
+                    deadline = time.monotonic() + 600
+                    while time.monotonic() < deadline:
+                        state, _ = run([str(blaze), "status"], ws, env)
+                        if not re.search(r"^    .*: loading ", state.stdout, re.M):
+                            break
+                        time.sleep(0.1)
+                    ran, _ = run([str(blaze), "run", "-q"], ws, env)
+                    elapsed = time.monotonic() - began
                 (work / f"{name}-{label}.stdout").write_text(ran.stdout)
                 (work / f"{name}-{label}.stderr").write_text(ran.stderr)
                 status, _ = run([str(blaze), "status"], ws, env)
@@ -302,7 +338,8 @@ def main(config):
                       (ran.returncode, ran.stdout) == (expected.returncode, expected.stdout),
                       f"exit {ran.returncode}, {ran.stdout!r}" + (f", {ran.stderr[-500:]}" if ran.returncode else ""))
                 if rejected:
-                    check(f"{name}/{label}: source error names PATH", "PATH" in ran.stderr)
+                    if name == "failure":
+                        check(f"{name}/{label}: script refused the request", "requested script failure" in ran.stderr)
                     continue
                 if first_workers is None:
                     first_workers, first_loads = workers, loads
@@ -330,6 +367,11 @@ def main(config):
         ]
         sequence("script", SCRIPT, script_steps)
         sequence("generated", GENERATED, script_steps)
+        sequence("failure", FAILURE, [
+            ("initial", [tools[0]], "alpha"), ("rejected", [tools[1]], "fail"),
+            ("recovered", [tools[0]], "alpha"), ("identical", [tools[0]], "alpha"),
+            ("different-tool", [tools[1]], "beta"), ("restored", [tools[0]], "alpha"),
+        ])
         macro_steps = [
             ("initial", [tools[0]], None), ("identical", [tools[0]], None),
             ("empty-prefix", [empty, tools[0]], None),
@@ -338,7 +380,8 @@ def main(config):
         ]
         sequence("native", NATIVE, macro_steps)
         sequence("compiled", COMPILED, macro_steps)
-        sequence("stateful", STATEFUL, macro_steps)
+        sequence("stateful", STATEFUL, script_steps)
+        sequence("nested", NESTED, macro_steps)
         sequence("required", REQUIRED, [
             ("rejected", [tools[0]], None), ("recovered", [tools[1]], None),
             ("identical", [tools[1]], None),

@@ -61,6 +61,8 @@ struct Scripts {
     scripts: Vec<Script>,
     /// The variables it runs one again for a change of, as they were when they last ran.
     variables: Vec<(String, Option<String>)>,
+    /// A failed run or reload may already have replaced OUT_DIR files.
+    unsettled: bool,
 }
 
 /// The build script of one package of the workspace.
@@ -284,7 +286,13 @@ impl Scripts {
         if scripts.is_empty() && variables.is_empty() {
             return None;
         }
-        Some(Scripts { workspace: workspace.clone(), config: config.clone(), scripts, variables })
+        Some(Scripts {
+            workspace: workspace.clone(),
+            config: config.clone(),
+            scripts,
+            variables,
+            unsettled: false,
+        })
     }
 
     /// Runs the scripts again where cargo would for a process with `env`, or with `None`
@@ -295,12 +303,15 @@ impl Scripts {
             (0..self.scripts.len()).filter(|&at| self.scripts[at].changed()).collect();
         let variables =
             env.is_some_and(|env| self.variables.iter().any(|(name, was)| env.get(name) != *was));
-        if changed.is_empty() && !variables {
+        if changed.is_empty() && !variables && !self.unsettled {
             return Ok(false);
         }
         // Cargo would run only the scripts whose files changed: each is run again here as
         // cargo ran it, which costs the script and not a cargo that resolves the workspace.
-        if !variables && changed.iter().all(|&at| self.scripts[at].reruns_the_same()) {
+        if !variables
+            && !self.unsettled
+            && changed.iter().all(|&at| self.scripts[at].reruns_the_same())
+        {
             changed.into_iter().for_each(|at| self.scripts[at].stamp_again());
             return Ok(false);
         }
@@ -312,6 +323,7 @@ impl Scripts {
             let value = env.map_or_else(|| was.clone(), |env| env.get(name));
             config.extra_env.insert(name.clone(), value);
         }
+        self.unsettled = true;
         let said = crate::events::within(crate::events::Step::BuildScripts, None, || {
             self.workspace.run_build_scripts(&config, &|_| {})
         })?;
@@ -326,6 +338,7 @@ impl Scripts {
             *was = config.extra_env.get(name).cloned().flatten();
         }
         self.config = config;
+        self.unsettled = false;
         Ok(false)
     }
 }

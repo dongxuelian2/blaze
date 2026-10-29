@@ -9560,13 +9560,22 @@ fn run_holding(
                             .extra_env
                             .insert("PATH".to_owned(), stream.env.get("PATH"));
                         let reading = process::turn(&mut db, stream.env.clone());
+                        // An opaque native macro can retain any inherited variable, not
+                        // just PATH. Its code identity includes this request's snapshot.
+                        let macros = checkouts.loaded.reset_proc_macro_servers()
+                            || ide_db::base_db::all_crates(&db)
+                                .iter()
+                                .any(|krate| krate.data(&db).target_kind.is_proc_macro());
+                        refresh_macros |= macros;
+                        if macros {
+                            for program in &mut programs {
+                                program.known.start_again();
+                                program.unbuilt.stale = true;
+                            }
+                            listed.touch(&db, None);
+                            lock(&as_built).clear();
+                        }
                         if path_changed {
-                            // Native libraries can retain values in statics, and a rebuilt
-                            // library can occupy the same filename. Start fresh servers.
-                            refresh_macros |= checkouts.loaded.reset_proc_macro_servers()
-                                || ide_db::base_db::all_crates(&db)
-                                    .iter()
-                                    .any(|krate| krate.data(&db).target_kind.is_proc_macro());
                             let external_assembler = hir_ty_codegen::assembler_path(&db).is_some();
                             // A linker and the tools it invokes resolve through PATH too.
                             // Emit a whole object from the retained database's code: a

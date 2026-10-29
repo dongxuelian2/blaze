@@ -39,7 +39,9 @@ use ide_db::{
 use itertools::Itertools;
 pub use proc_macro_api::bidirectional_protocol::msg::{SubRequest, SubResponse};
 use proc_macro_api::{MacroDylib, ProcMacroClient, bidirectional_protocol::msg::ParentSpan};
-use project_model::{CargoConfig, PackageRoot, ProjectManifest, ProjectWorkspace};
+use project_model::{
+    CargoConfig, PackageRoot, ProjectManifest, ProjectWorkspace, ProjectWorkspaceKind,
+};
 use span::{Span, SpanAnchor, SyntaxContext};
 use tt::{TextRange, TextSize};
 use vfs::{
@@ -208,6 +210,7 @@ impl Loaded {
         // The graph of all of them: the database keeps the crates it has that are in it.
         let mut crate_graph = CrateGraphBuilder::default();
         let mut proc_macros = FxHashMap::default();
+        let mut cargo_macros = FxHashSet::default();
         let mut members = Vec::new();
         for ws in &self.workspaces {
             let (other, mut paths) = ws.to_crate_graph(
@@ -226,6 +229,11 @@ impl Loaded {
             );
             let ids = crate_graph.extend(other, &mut paths);
             members.push(ids.into_values().collect::<Vec<_>>());
+            if matches!(ws.kind, ProjectWorkspaceKind::Cargo { .. }) {
+                cargo_macros.extend(
+                    paths.values().filter_map(|it| it.as_ref().ok().map(|(_, path)| path.clone())),
+                );
+            }
             proc_macros.extend(paths);
         }
         // Keep request variables in memory and on commands, never in crate descriptions.
@@ -253,10 +261,16 @@ impl Loaded {
                     .collect();
                 let mut seen = FxHashSet::default();
                 let mut unlisted = Vec::new();
-                for (id, it) in &proc_macros {
+                let mut order: Vec<_> = proc_macros.keys().copied().collect();
+                // A macro can itself expand another macro while being compiled.
+                order.sort_by_key(|&id| crate_graph.transitive_deps(id).count());
+                for id in order {
+                    let it = &proc_macros[&id];
                     let Ok((name, library)) = it else { continue };
-                    if is_listed(library)
-                        || is_wasm(library)
+                    // Cargo can keep an owned library when env! read a changed PATH.
+                    // Re-enter the source compiler; its read-set cache checks that input.
+                    // Explicit precompiled libraries in JSON projects remain their inputs.
+                    if ((is_listed(library) || is_wasm(library)) && !cargo_macros.contains(library))
                         || is_const_macros(library)
                         || !seen.insert(library.clone())
                     {
@@ -264,7 +278,7 @@ impl Loaded {
                     }
                     let sysroot = ws.sysroot.root();
                     let description =
-                        described::description(&crate_graph, vfs, *id, &libraries, sysroot);
+                        described::description(&crate_graph, vfs, id, &libraries, sysroot);
                     unlisted.push(listed::Compiled {
                         name: name.clone(),
                         library: library.clone(),

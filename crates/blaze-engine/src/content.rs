@@ -11,7 +11,7 @@ use std::{
 use hir_ty_codegen::{CARGO_HOME, ContentId, LibrarySources, moved};
 use ide_db::{
     RootDatabase,
-    base_db::{Crate, SourceDatabase as _},
+    base_db::{self, Crate, SourceDatabase as _},
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use sha2::{Digest, Sha256};
@@ -180,6 +180,18 @@ impl Contents {
         field(env.as_bytes());
         // What `env!` and `option_env!` in it read of the process the build is for.
         field(format!("{:?}", process_reads(krate)).as_bytes());
+        if krate
+            .data(db)
+            .dependencies
+            .iter()
+            .any(|dep| dep.crate_id.data(db).target_kind.is_proc_macro())
+        {
+            field(b"proc-macro host environment");
+            let env = base_db::ProcessEnv::try_get(db)
+                .map(|it| it.vars(db).clone())
+                .unwrap_or_else(crate::process::own);
+            field(crate::process::fingerprint(&env).as_bytes());
+        }
         if let Some(path) = hir_ty_codegen::assembler_path(db) {
             field(b"external assembler PATH");
             field(format!("{path:?}").as_bytes());
@@ -271,6 +283,18 @@ impl Contents {
         cfgs.sort_unstable();
         field(cfgs.join("\n").as_bytes());
         field(format!("{:?}", process_reads(krate)).as_bytes());
+        if krate
+            .data(db)
+            .dependencies
+            .iter()
+            .any(|dep| dep.crate_id.data(db).target_kind.is_proc_macro())
+        {
+            field(b"proc-macro host environment");
+            let env = base_db::ProcessEnv::try_get(db)
+                .map(|it| it.vars(db).clone())
+                .unwrap_or_else(crate::process::own);
+            field(crate::process::fingerprint(&env).as_bytes());
+        }
         if let Some(path) = hir_ty_codegen::assembler_path(db) {
             field(b"external assembler PATH");
             field(format!("{path:?}").as_bytes());
