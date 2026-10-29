@@ -106,19 +106,8 @@ ASSEMBLY = dict(PLAIN, **{
 ''',
 })
 
-REQUIRED = dict(PLAIN, **{
-    "build.rs": '''fn main() {
-    println!("cargo:rerun-if-changed=build.rs");
-    let tool = std::process::Command::new("blaze-path-tool").output().unwrap();
-    assert!(tool.status.success());
-    let source = if tool.stdout[0] == b'f' {
-        "fn main() { let = ; }"
-    } else { "fn main() { println!(\\\"ready\\\"); }" };
-    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    std::fs::write(out.join("selected.rs"), source).unwrap();
-}
-''',
-    "src/main.rs": 'include!(concat!(env!("OUT_DIR"), "/selected.rs"));\n',
+DIAGNOSTICS = dict(PLAIN, **{
+    "src/main.rs": 'fn main() { let = ; }\n',
 })
 
 # env! captures the macro compiler's PATH, rather than the expansion process's PATH.
@@ -271,8 +260,11 @@ def main(config):
         cargo, rustc = reference_tool("cargo"), reference_tool("rustc")
         first_workers = None
         first_loads = None
+        rejected_starts = None
         try:
             for label, prefix, value in steps:
+                if name == "diagnostics" and label == "recovered":
+                    (ws / "src/main.rs").write_text(PLAIN["src/main.rs"])
                 env = dict(base)
                 if native:
                     prefix = [ws / path.name if path in tools else path for path in prefix]
@@ -282,7 +274,7 @@ def main(config):
                 # Use the pinned tools directly, without rustup changing their PATH.
                 reference = dict(env, RUSTC=rustc, CARGO_TARGET_DIR=str(work / "reference" / name / label))
                 expected, _ = run([cargo, "run", "--offline", "-q"], ws, reference)
-                rejected = name in ("required", "failure") and label == "rejected"
+                rejected = name in ("diagnostics", "failure") and label.startswith("rejected")
                 check(f"{name}/{label}: reference verdict", (expected.returncode != 0) if rejected else expected.returncode == 0,
                       expected.stderr[-500:] if expected.returncode and not rejected else "")
                 assembled_before = assembler_log.read_text().splitlines() if assembler_log.exists() else []
@@ -309,8 +301,10 @@ def main(config):
                 logs = [path.read_text(errors="replace") for path in home.glob("workers/*/log")]
                 loads = sum(text.count("load workspace:") for text in logs)
                 reloads = sum(text.count("reload:") for text in logs)
+                daemon_log = (home / "daemon.log").read_text(errors="replace")
+                starts = len(re.findall(r"worker \S+ of pid \d+ for ", daemon_log))
                 record = dict(case=name, step=label, seconds=elapsed, workers=workers,
-                              identities=identities, loads=loads, reloads=reloads,
+                              identities=identities, loads=loads, reloads=reloads, worker_starts=starts,
                               status=status.stdout, exit=ran.returncode, stdout=ran.stdout,
                               reference_exit=expected.returncode, reference_stdout=expected.stdout)
                 results.append(record)
@@ -345,6 +339,15 @@ def main(config):
                 if rejected:
                     if name == "failure":
                         check(f"{name}/{label}: script refused the request", "requested script failure" in ran.stderr)
+                    else:
+                        check(f"{name}/{label}: source diagnostic", "expected" in ran.stderr)
+                        if label == "rejected":
+                            check(f"{name}/{label}: initial diagnostic load", starts > 0, str(starts))
+                        elif label == "rejected-identical":
+                            check(f"{name}/{label}: diagnostic reused", starts == rejected_starts, str(starts))
+                        else:
+                            check(f"{name}/{label}: changed environment retried", starts > rejected_starts, str(starts))
+                        rejected_starts = starts
                     continue
                 if first_workers is None:
                     first_workers, first_loads = workers, loads
@@ -388,9 +391,9 @@ def main(config):
         sequence("stateful", STATEFUL, script_steps)
         sequence("nested", NESTED, macro_steps)
         sequence("nested-stateful", NESTED_STATEFUL, script_steps)
-        sequence("required", REQUIRED, [
-            ("rejected", [tools[0]], None), ("recovered", [tools[1]], None),
-            ("identical", [tools[1]], None),
+        sequence("diagnostics", DIAGNOSTICS, [
+            ("rejected", [tools[0]], None), ("rejected-identical", [tools[0]], None),
+            ("rejected-env", [tools[1]], None), ("recovered", [tools[1]], None),
         ])
         sequence("linker", PLAIN, [
             ("initial", [tools[0]], None), ("identical", [tools[0]], None),
