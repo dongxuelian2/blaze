@@ -58,6 +58,8 @@ jobs:
               assert units and all(any(dep['name'] == 'tempfile' for dep in unit['deps']) for unit in units), system
               print(system + ': blaze-cargo links tempfile')
           PY
+      - name: Evaluate the Linux Nix package with the generated graph
+        run: nix eval --raw .#packages.x86_64-linux.daemon-units.drvPath
       - uses: actions/upload-artifact@v7
         with:
           name: path-worker-nix-units
