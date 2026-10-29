@@ -307,11 +307,13 @@ pub fn libraries_of_with_env(
                 }
             }
             command.arg(COMMAND);
-            if as_wasm {
-                let description =
-                    description.as_ref().ok_or("the load can't describe its crate")?;
+            if let Some(description) = description {
                 let description = with_macro_paths(description, &paths)?;
-                command.arg(WASM_FLAG).arg(described_at(library, &description)?);
+                command
+                    .arg(if as_wasm { WASM_FLAG } else { NATIVE_FLAG })
+                    .arg(described_at(library, &description)?);
+            } else if as_wasm {
+                return Err("the load can't describe its crate".to_owned());
             }
             if !paths.is_empty() {
                 command.arg(MACROS_FLAG).arg(macro_paths_at(library, &paths)?);
@@ -374,6 +376,7 @@ pub fn refusal(name: &str, why: &str, workspace: &Path) -> String {
 /// The flag of [`COMMAND`] that has it make a WebAssembly module rather than a library, from
 /// the description in the file after it.
 const WASM_FLAG: &str = "--wasm";
+const NATIVE_FLAG: &str = "--native";
 const MACROS_FLAG: &str = "--macro-libraries";
 
 fn with_macro_paths(
@@ -446,8 +449,11 @@ fn described_at(library: &Path, description: &str) -> Result<PathBuf, String> {
 /// through the wrapper, which recorded nothing of it.
 pub fn command(args: impl Iterator<Item = std::ffi::OsString>) -> anyhow::Result<()> {
     let mut args = args.peekable();
-    let described = match args.next_if(|it| it == WASM_FLAG) {
-        Some(_) => Some(PathBuf::from(args.next().context("a description after --wasm")?)),
+    let described = match args.next_if(|it| it == WASM_FLAG || it == NATIVE_FLAG) {
+        Some(flag) => Some((
+            PathBuf::from(args.next().context("a description after --wasm or --native")?),
+            flag == WASM_FLAG,
+        )),
         None => None,
     };
     let macros: BTreeMap<PathBuf, PathBuf> = match args.next_if(|it| it == MACROS_FLAG) {
@@ -460,7 +466,9 @@ pub fn command(args: impl Iterator<Item = std::ffi::OsString>) -> anyhow::Result
     let sysroot = PathBuf::from(args.next().context("the sysroot is named first")?);
     let library = PathBuf::from(args.next().context("then rustc's library")?);
     let made = match &described {
-        Some(described) => module_of(&sysroot, &library, described).map(Some),
+        Some((described, wasm)) => {
+            described_library(&sysroot, &library, described, *wasm).map(Some)
+        }
         None => library_of(&sysroot, &library, &macros),
     };
     match made {
@@ -477,10 +485,13 @@ pub fn command(args: impl Iterator<Item = std::ffi::OsString>) -> anyhow::Result
     }
 }
 
-/// blaze's WebAssembly module of the proc macro rustc compiled at `library`, built from the
-/// `rust-project.json` at `described` ([`described_at`]) over the standard library of
-/// `sysroot`, beside it.
-fn module_of(sysroot: &Path, library: &Path, described: &Path) -> Result<PathBuf, String> {
+/// A native library or WebAssembly module built from the load's current description.
+fn described_library(
+    sysroot: &Path,
+    library: &Path,
+    described: &Path,
+    wasm: bool,
+) -> Result<PathBuf, String> {
     let description = std::fs::read_to_string(described).map_err(|it| it.to_string())?;
     let value: serde_json::Value =
         serde_json::from_str(&description).map_err(|it| it.to_string())?;
@@ -495,15 +506,25 @@ fn module_of(sysroot: &Path, library: &Path, described: &Path) -> Result<PathBuf
         name,
         proc_macro: true,
         wasi: false,
-        wasm: true,
-        exe: scratch.path().join(format!("{stem}.wasm")),
+        wasm,
+        exe: scratch.path().join(if wasm {
+            format!("{stem}.wasm")
+        } else {
+            library
+                .file_name()
+                .and_then(OsStr::to_str)
+                .ok_or("a native library unnamed")?
+                .to_owned()
+        }),
         dep_info: scratch.path().join(format!("{stem}.d")),
     };
     own_script::compile_described(sysroot, &description, &made, scratch.path())?;
     let file = publish(dir, &made.exe)?;
     // Here, as soon as it is built and beside the other modules' builds, rather than in the
     // load, which loads one module after another.
-    blaze_macro_wasm::prepare(&file, own_script::store())?;
+    if wasm {
+        blaze_macro_wasm::prepare(&file, own_script::store())?;
+    }
     Ok(file)
 }
 
