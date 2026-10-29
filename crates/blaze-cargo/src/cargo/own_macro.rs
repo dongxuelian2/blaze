@@ -23,7 +23,7 @@ use anyhow::Context as _;
 
 use super::{
     own_script::{self, Made},
-    sandboxed, say,
+    sandboxed,
     units::Record,
 };
 
@@ -250,18 +250,27 @@ const AT_ONCE: usize = 4;
 /// What stands for each of `libraries`, proc macros rustc compiled in a build through the
 /// wrapper, which recorded them (`units.rs`), each with its crate's name, in the workspace at
 /// `workspace`: the store's or a new build from source over the standard library of
-/// `sysroot`, each in a process of its own. A WebAssembly module ([`wasm`]), or `Err` naming
-/// the macro when it cannot be one, but for a package the workspace runs natively
-/// ([`NATIVE_KEY`]), which is `None`, expanded with rustc's library. Otherwise blaze's
-/// library for [`server`], or `None` for one blaze could not make, which is said.
+/// `sysroot`, each in a process of its own. A WebAssembly module ([`wasm`]), or blaze's
+/// native library for [`server`] when the workspace opts into it ([`NATIVE_KEY`]). A
+/// missing sysroot or server, or a failed compilation, is an error naming the macro.
 pub fn libraries_of(
     sysroot: Option<&Path>,
     workspace: &Path,
     libraries: &[Compiled],
 ) -> Vec<Result<Option<PathBuf>, String>> {
+    libraries_of_with_env(sysroot, workspace, libraries, &rustc_hash::FxHashMap::default())
+}
+
+/// Like [`libraries_of`], with a request's environment for the compiler subprocesses.
+pub fn libraries_of_with_env(
+    sysroot: Option<&Path>,
+    workspace: &Path,
+    libraries: &[Compiled],
+    env: &rustc_hash::FxHashMap<String, Option<String>>,
+) -> Vec<Result<Option<PathBuf>, String>> {
     let wasm = wasm();
     if !wasm && server().is_none() {
-        return vec![Ok(None); libraries.len()];
+        return vec![Err("blaze has no native proc-macro server".to_owned()); libraries.len()];
     }
     let native = match wasm {
         true => {
@@ -276,13 +285,7 @@ pub fn libraries_of(
     let refused = |name: &str, why: &str| refusal(name, why, workspace);
     let Some(sysroot) = sysroot else {
         let why = "the workspace has no sysroot to build it over";
-        return libraries
-            .iter()
-            .map(|Compiled { name, .. }| match wasm && !native.contains(name) {
-                true => Err(refused(name, why)),
-                false => Ok(None),
-            })
-            .collect();
+        return libraries.iter().map(|Compiled { name, .. }| Err(refused(name, why))).collect();
     };
     let Ok(exe) = std::env::current_exe() else {
         return vec![Err("blaze does not know where it is".to_owned()); libraries.len()];
@@ -299,9 +302,17 @@ pub fn libraries_of(
                     };
                     let as_wasm = wasm && !native.contains(name);
                     if !as_wasm && server().is_none() {
+                        made.lock().unwrap()[at] =
+                            Err(format!("blaze has no native proc-macro server for {name}"));
                         continue;
                     }
                     let mut command = std::process::Command::new(&exe);
+                    for (key, value) in env {
+                        match value {
+                            Some(value) => _ = command.env(key, value),
+                            None => _ = command.env_remove(key),
+                        }
+                    }
                     command.arg(COMMAND);
                     if as_wasm {
                         let Some(description) = description else {
@@ -326,21 +337,17 @@ pub fn libraries_of(
                     let found = match ran {
                         Ok(ran) if ran.status.success() => {
                             let said = String::from_utf8_lossy(&ran.stdout).trim_end().to_owned();
-                            Ok((!said.is_empty()).then(|| PathBuf::from(said)))
+                            match said.is_empty() {
+                                false => Ok(Some(PathBuf::from(said))),
+                                true => Err(format!("blaze produced no library for {name}")),
+                            }
                         }
                         Ok(ran) => Err(String::from_utf8_lossy(&ran.stderr).trim_end().to_owned()),
                         Err(error) => Err(error.to_string()),
                     };
                     let found = match found {
                         Err(why) if as_wasm => Err(refused(name, &why)),
-                        Err(why) => {
-                            let file = library.file_name().unwrap_or_default().to_string_lossy();
-                            say::fallback(
-                                &format!("blaze did not make the proc macro {file}: {why}"),
-                                "rustc's library of it is expanded by the toolchain's server",
-                            );
-                            Ok(None)
-                        }
+                        Err(why) => Err(format!("blaze did not make the proc macro {name}: {why}")),
                         found => found,
                     };
                     made.lock().unwrap()[at] = found;
