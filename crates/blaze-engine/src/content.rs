@@ -22,18 +22,11 @@ type Hash = [u8; 32];
 fn native_macro_environment(db: &RootDatabase, krate: Crate) -> Option<String> {
     let mut inherited = false;
     for dep in &krate.data(db).dependencies {
-        if !dep.crate_id.data(db).target_kind.is_proc_macro() {
-            continue;
-        }
-        let Some(loaded) = hir_expand::proc_macro::ProcMacros::get_for_crate(db, dep.crate_id)
-        else {
-            continue;
-        };
-        let Some(macros) = hir_expand::proc_macro::CrateProcMacros::macros(loaded) else {
-            continue;
-        };
-        for proc_macro in macros.iter() {
-            inherited |= proc_macro.expander.inherits_process_env();
+        if dep.crate_id.data(db).target_kind.is_proc_macro()
+            && hir_expand::proc_macro::inherits_process_env(db, dep.crate_id)
+        {
+            inherited = true;
+            break;
         }
     }
     if !inherited {
