@@ -300,6 +300,7 @@ pub fn libraries_of_with_env(
                 return Err("blaze has no native proc-macro server".to_owned());
             }
             let mut command = std::process::Command::new(&exe);
+            command.current_dir(workspace);
             for (key, value) in env {
                 match value {
                     Some(value) => _ = command.env(key, value),

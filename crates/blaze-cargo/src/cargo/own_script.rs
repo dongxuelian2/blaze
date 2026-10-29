@@ -400,6 +400,8 @@ fn built(
         // A digest covers that opaque input without persisting the variables themselves.
         first.field(b"proc-macro host environment");
         first.field(crate::process::fingerprint(&crate::process::own()).as_bytes());
+        let here = std::env::current_dir().map_err(|it| it.to_string())?;
+        first.field(b"proc-macro host directory").field(here.as_os_str().as_encoded_bytes());
     }
     first.field(&[u8::from(made.proc_macro) | u8::from(made.wasm) << 1]);
     if made.wasi {
@@ -620,7 +622,13 @@ fn build(
     if !shipped || made.wasi || made.wasm {
         blaze.env("BLAZE_STD_FROM", "off");
     }
-    blaze.current_dir(dir).stdin(Stdio::null()).stdout(Stdio::null());
+    // Native macros expanded during compilation see the caller's workspace, as cargo's
+    // compiler does. The sandbox admits that directory; the output scratch directory
+    // would hide workspace tools. All output paths above are absolute.
+    if !made.proc_macro || made.wasm {
+        blaze.current_dir(dir);
+    }
+    blaze.stdin(Stdio::null()).stdout(Stdio::null());
     let built = blaze.output().map_err(|it| format!("blaze did not run: {it}"))?;
     let said = String::from_utf8_lossy(&built.stderr).into_owned();
     std::fs::write(dir.join("blaze.log"), &said).map_err(|it| it.to_string())?;
