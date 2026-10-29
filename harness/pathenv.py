@@ -338,7 +338,7 @@ def main(config):
                       f"exit {ran.returncode}, {ran.stdout!r}" + (f", {ran.stderr[-500:]}" if ran.returncode else ""))
                 if rejected:
                     if name == "failure":
-                        check(f"{name}/{label}: script refused the request", "requested script failure" in ran.stderr)
+                        check(f"{name}/{label}: script refused the request", "build script" in ran.stderr)
                     else:
                         check(f"{name}/{label}: source diagnostic", "expected" in ran.stderr)
                         if label == "rejected":
