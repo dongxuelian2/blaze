@@ -16,7 +16,8 @@ mod path {
 
     impl Dir {
         fn new(name: &str) -> Dir {
-            let dir = std::env::temp_dir().join(format!("blaze-spawn-path-{name}-{}", std::process::id()));
+            let dir = std::env::temp_dir()
+                .join(format!("blaze-spawn-path-{name}-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             Dir(dir)
         }
@@ -37,7 +38,12 @@ mod path {
     }
 
     fn resolved(program: &str, env: &[(OsString, OsString)], dir: &Path) -> io::Result<PathBuf> {
-        let plan = super::super::Plan::new(&super::super::Program { program: Path::new(program), args: &[], env, dir })?;
+        let plan = super::super::Plan::new(&super::super::Program {
+            program: Path::new(program),
+            args: &[],
+            env,
+            dir,
+        })?;
         // SAFETY: the plan owns the NUL-terminated program its pointer names.
         let path = unsafe { CStr::from_ptr(plan.program) };
         Ok(OsString::from_vec(path.to_bytes().to_vec()).into())
@@ -62,7 +68,10 @@ mod path {
     fn an_unset_path_never_uses_the_daemons_environment() {
         let error = resolved("sh", &[], Path::new("/")).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
-        assert!(error.to_string().contains("PATH is not set in the command's environment"), "{error}");
+        assert!(
+            error.to_string().contains("PATH is not set in the command's environment"),
+            "{error}"
+        );
         assert_eq!(resolved("/bin/sh", &[], Path::new("/")).unwrap(), Path::new("/bin/sh"));
     }
 
@@ -71,24 +80,31 @@ mod path {
         let dir = Dir::new("requests");
         dir.tool("one/blaze-path-tool", "one");
         dir.tool("two/blaze-path-tool", "two");
-        for (path, expected) in [("one:two", "one"), ("two:one", "two"), ("one:two", "one")] {
-            let command = Box::new(Command {
-                program: "blaze-path-tool".into(),
-                args: Vec::new(),
-                env: vec![("PATH".into(), path.into())],
-                dir: dir.0.clone(),
-                stdin: Vec::new(),
-                sandbox: Sandbox::Off,
-                memory: None,
-            });
-            let started = crate::process::start(Path::new("/"), command, None).unwrap();
-            let mut stdout = Vec::new();
-            std::fs::File::from(started.stdout).read_to_end(&mut stdout).unwrap();
-            let mut stderr = Vec::new();
-            std::fs::File::from(started.stderr).read_to_end(&mut stderr).unwrap();
-            let exit = started.finish.exited(started.pid, stdout, stderr).unwrap();
-            assert_eq!((exit.code, exit.signal), (Some(0), None), "{exit:?}");
-            assert_eq!(exit.stdout, expected.as_bytes(), "PATH={path}");
+        let mut relative = PathBuf::new();
+        for _ in std::env::current_dir().unwrap().components().skip(1) {
+            relative.push("..");
+        }
+        relative.push(dir.0.strip_prefix("/").unwrap());
+        for cwd in [&dir.0, &relative] {
+            for (path, expected) in [("one:two", "one"), ("two:one", "two"), ("one:two", "one")] {
+                let command = Box::new(Command {
+                    program: "blaze-path-tool".into(),
+                    args: Vec::new(),
+                    env: vec![("PATH".into(), path.into())],
+                    dir: cwd.clone(),
+                    stdin: Vec::new(),
+                    sandbox: Sandbox::Off,
+                    memory: None,
+                });
+                let started = crate::process::start(Path::new("/"), command, None).unwrap();
+                let mut stdout = Vec::new();
+                std::fs::File::from(started.stdout).read_to_end(&mut stdout).unwrap();
+                let mut stderr = Vec::new();
+                std::fs::File::from(started.stderr).read_to_end(&mut stderr).unwrap();
+                let exit = started.finish.exited(started.pid, stdout, stderr).unwrap();
+                assert_eq!((exit.code, exit.signal), (Some(0), None), "{exit:?}");
+                assert_eq!(exit.stdout, expected.as_bytes(), "PATH={path}");
+            }
         }
     }
 }
